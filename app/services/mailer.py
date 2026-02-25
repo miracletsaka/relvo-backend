@@ -1,26 +1,34 @@
 import os
-import httpx
+from email.message import EmailMessage
+import aiosmtplib
 
-RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
-RESEND_FROM = os.getenv("RESEND_FROM", "NeuroFlow <no-reply@yourdomain.com>").strip()
+GMAIL_USER = os.getenv("GMAIL_USER", "").strip()
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "").strip()
+EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "NeuroFlow").strip()
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:3000").strip()
 
 async def send_email(to: str, subject: str, html: str):
+    if not GMAIL_USER or not GMAIL_APP_PASSWORD:
+        raise RuntimeError("GMAIL_USER / GMAIL_APP_PASSWORD not set")
 
-    if not RESEND_API_KEY:
-        raise RuntimeError("RESEND_API_KEY not set")
+    msg = EmailMessage()
+    msg["From"] = f"{EMAIL_FROM_NAME} <{GMAIL_USER}>"
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content("This email requires an HTML-capable email client.")  # plain fallback
+    msg.add_alternative(html, subtype="html")
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.post(
-            "https://api.resend.com/emails",
-            headers = {
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={"from": RESEND_FROM, "to": [to], "subject": subject, "html": html},
-        )
-        r.raise_for_status()
-        return r.json()
+    await aiosmtplib.send(
+        msg,
+        hostname="smtp.gmail.com",
+        port=587,
+        start_tls=True,
+        username=GMAIL_USER,
+        password=GMAIL_APP_PASSWORD,
+        timeout=20,
+    )
+
+    return {"success": True}
 
 def verify_link(token: str) -> str:
     return f"{APP_BASE_URL}/auth/verify?token={token}"

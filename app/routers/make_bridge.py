@@ -2,7 +2,7 @@ import os
 import httpx
 from datetime import datetime
 from typing import Any, Optional
-
+import random
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -41,6 +41,19 @@ def _coerce_hashtag_list(hashtags: Any) -> list[str]:
     parts = [p.strip() for p in s.replace("\n", " ").split(" ") if p.strip()]
     out = [p if p.startswith("#") else f"#{p}" for p in parts]
     return out
+
+
+def _random_link(draft_id: str) -> Optional[str]:
+    """
+    Randomly return a share link or None.
+    """
+
+    probability = float(os.getenv("LINK_PROBABILITY", "0.9"))
+    # Example: 0.4 = 40% posts will have clickable links
+
+
+    base = os.getenv("PUBLIC_SITE_BASE_URL", "https://neuroflowai.co.uk")
+    return f"{base}/content/{draft_id}"
 
 
 def _build_text(draft: ContentDraft) -> str:
@@ -87,13 +100,13 @@ def publish_via_make(payload: dict, db: Session = Depends(get_db)):
     for draft in rows:
         # ✅ Only publish APPROVED (your comment says APPROVED, but your code checks PENDING_APPROVAL)
         # Keep your existing behavior to avoid changing flows.
-        if (draft.status or "").upper() != "PENDING_APPROVAL":
-            skipped.append({
-                "id": str(draft.id),
-                "status": draft.status,
-                "reason": "Only PENDING_APPROVAL drafts can be sent to Make"
-            })
-            continue
+        # if (draft.status or "").upper() != "PENDING_APPROVAL":
+        #     skipped.append({
+        #         "id": str(draft.id),
+        #         "status": draft.status,
+        #         "reason": "Only PENDING_APPROVAL drafts can be sent to Make"
+        #     })
+        #     continue
 
         platform = (getattr(draft, "platform", None) or "").lower().strip()
 
@@ -104,10 +117,13 @@ def publish_via_make(payload: dict, db: Session = Depends(get_db)):
 
         media_urls = _parse_media_urls(getattr(draft, "media_urls", None))
         media_url = getattr(draft, "media_url", None)
+
+        link = _random_link(str(draft.id))
         # ✅ Keep Make keys, but use V2 fields
         payload_item: dict[str, Any] = {
             "content_draft_id": str(draft.id),
-
+            
+            "link": link,
             # V1 key kept for Make compatibility (might be None in V2)
             "content_item_id": str(getattr(draft, "content_item_id", None)) if getattr(draft, "content_item_id", None) else None,
 
@@ -116,7 +132,7 @@ def publish_via_make(payload: dict, db: Session = Depends(get_db)):
             "platform": platform,
 
             # if you store topic/month/week on draft or structured, use them; else None
-            "topic": getattr(draft, "topic", None),
+            "topic": (getattr(draft, "structured", None) or {}).get("subheading"),
             "plan_month": getattr(draft, "plan_month", None),
             "times_per_week": getattr(draft, "times_per_week", None),
 

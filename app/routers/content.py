@@ -365,3 +365,15 @@ def update_content_media(content_item_id: str, payload: UpdateMediaRequest, db: 
         "media_provider": getattr(entity, "media_provider", None),
         "media_caption": getattr(entity, "media_caption", None),
     }
+
+@router.get("/{content_id}")
+def get_content(content_id: str, db: Session = Depends(get_db)):
+
+    item = db.execute(
+        select(ContentItem).where(ContentItem.id == content_id)
+    ).scalar_one_or_none()
+
+    if not item:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    return _serialize_content_item(item)

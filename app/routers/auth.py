@@ -139,7 +139,6 @@ def login(payload: LoginIn, req: Request, resp: Response, db: DbSession = Depend
     db.commit()
 
     set_session_cookie(resp, st)
-    print("SET COOKIE HEADER:", resp.headers.get("set-cookie"))
     return {"ok": True}
 
 @router.post("/logout")

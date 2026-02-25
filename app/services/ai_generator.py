@@ -3,6 +3,8 @@ import os
 import json
 import re
 from typing import Dict, Any, Optional, List
+import random
+from typing import Optional
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -93,6 +95,250 @@ def strip_markdown(text: str) -> str:
     
     return text
 
+AD_STYLES = [
+    "hook_checklist",
+    "story",
+    "scenario",
+    "problem_agitate",
+    "case_study",
+    "controversial",
+    "question_led",
+    "before_after",
+]
+
+def get_ad_style_instructions(style: str) -> str:
+    styles = {
+
+        "hook_checklist": """
+NARRATIVE STYLE: HOOK + CHECKLIST (Classic Direct Response)
+
+Write the full_caption using this structure:
+1. OPENING HOOK (Emoji + bold statement that stops the scroll)
+2. PRODUCT INTRODUCTION (one clear sentence — what it is and who it's for)
+3. "Imagine having a smart assistant that:" (lead into checklist)
+4. BENEFIT CHECKLIST (✅ format, 5-6 items — plain text only)
+5. DIFFERENTIATION paragraph (what makes this different)
+6. TARGET AUDIENCES (💼 with * bullets)
+7. WHY CHOOSE US (🔹 format, 5 items)
+8. URGENCY STATEMENT (one punchy line)
+9. VALUE PROPOSITIONS (3 emoji lines)
+10. CLOSING CTA
+""",
+
+        "story": """
+NARRATIVE STYLE: PERSONAL STORY (Emotional Journey)
+
+Write the full_caption as a personal story that leads into the product:
+
+1. STORY OPENING — Start with "I remember when..." or "A few months ago..." or "Last year, [type of business] was struggling with..."
+   Make it relatable, emotional, specific. 2-3 sentences.
+
+2. THE STRUGGLE — Describe the pain vividly. What was being lost? Time? Money? Customers?
+   Example: "Every night, messages piled up. Customers asking questions at 2am. No one to reply. Orders lost. Trust broken."
+
+3. THE TURNING POINT — Introduce the product as the discovery that changed everything.
+   Example: "Then we discovered something that changed everything."
+
+4. THE TRANSFORMATION — Show specific results after using it. Use numbers or feelings.
+   Example: "Within 2 weeks: response time dropped from 8 hours to 3 seconds. Sales went up. Stress went down."
+
+5. BENEFIT CHECKLIST (✅ format, 4-5 items — frame as what they now enjoy)
+
+6. INVITATION — Invite the reader into the same transformation.
+
+7. TARGET AUDIENCES (💼 with * bullets)
+
+8. CLOSING CTA with urgency
+""",
+
+        "scenario": """
+NARRATIVE STYLE: VIVID SCENARIO (Scene Painting)
+
+Write the full_caption by painting a vivid scenario the reader recognizes:
+
+1. SCENE SETTER — Drop them into a specific moment. Use "It's 11pm..." or "Picture this:" or "You just got back from work..."
+   Make it hyper-specific and visual. The reader should say "that's me."
+   Example: "It's Friday evening. You're exhausted. But your phone won't stop buzzing — customer after customer asking the same questions. And you're the only one who can answer."
+
+2. THE FRUSTRATION — Amplify the emotion. Don't rush to the solution.
+   Example: "You wanted to rest. Instead you're typing replies manually. Again. For the 47th time today."
+
+3. WHAT IF — Pivot with a "What if it didn't have to be this way?" moment.
+
+4. INTRODUCE THE SOLUTION — Bring in the product as the exact answer to that scenario.
+
+5. HOW IT WORKS (simple, plain language — 3-4 sentences max)
+
+6. BENEFIT CHECKLIST (✅ format, 5 items)
+
+7. WHO THIS IS FOR (💼 with * bullets)
+
+8. PROOF LINE — "Hundreds of businesses are already doing this."
+
+9. CLOSING CTA
+""",
+
+        "problem_agitate": """
+NARRATIVE STYLE: PROBLEM → AGITATE → SOLVE (PAS Framework)
+
+Write the full_caption using the PAS copywriting framework:
+
+1. PROBLEM — State the core problem clearly and directly. One punchy sentence.
+   Example: "You're losing customers every single day — and you don't even know it."
+
+2. AGITATE — Make the problem feel urgent and painful. Use rhetorical questions.
+   Example:
+   "How many messages went unanswered last night?
+   How many potential buyers moved on to your competitor?
+   How many times did a customer ask a simple question — and nobody replied for hours?
+   Every delayed reply is a lost sale. Every missed message is broken trust."
+
+3. AMPLIFY THE COST — Make them feel the real cost of inaction.
+   Example: "Over a month, that's hundreds of missed opportunities. Over a year? It could be the difference between a thriving business and a struggling one."
+
+4. INTRODUCE THE SOLUTION — Present the product as the precise fix.
+
+5. HOW IT SOLVES IT (✅ checklist, 5-6 items)
+
+6. DIFFERENTIATION — Why this over other solutions?
+
+7. TARGET AUDIENCES (💼 with * bullets)
+
+8. URGENCY + CLOSING CTA
+""",
+
+        "case_study": """
+NARRATIVE STYLE: MINI CASE STUDY (Result-First)
+
+Write the full_caption as a mini case study leading with the outcome:
+
+1. RESULT HEADLINE — Lead with the outcome first. Bold and specific.
+   Example: "How a small online shop went from 2-hour reply times to instant responses — and tripled their sales in 30 days."
+
+2. BACKGROUND — Briefly describe who the business was and their situation before.
+   (Can be realistic and hypothetical: "A local clothing boutique...")
+
+3. THE PROBLEM THEY HAD — Specific challenges. Numbers help.
+   Example: "They were getting 200+ messages a day. One person managing everything. Average reply time: 4 hours. Customers were leaving."
+
+4. WHAT THEY DID — Introduce the product as the solution they chose.
+
+5. THE RESULTS — Specific, tangible outcomes with numbers.
+   Example:
+   "📊 Reply time: 4 hours → 3 seconds
+   📈 Sales conversion: up 40%
+   😌 Team stress: dramatically reduced
+   ⭐ Customer satisfaction: all-time high"
+
+6. WHAT MADE IT WORK (✅ checklist — key features that drove results)
+
+7. "YOUR BUSINESS CAN DO THIS TOO" — Transition to the offer.
+
+8. TARGET AUDIENCES (💼 with * bullets)
+
+9. CLOSING CTA
+""",
+
+        "controversial": """
+NARRATIVE STYLE: BOLD CLAIM / MYTH BUSTER (Pattern Interrupt)
+
+Write the full_caption starting with a bold claim that stops the scroll:
+
+1. CONTROVERSIAL OPENER — Challenge a common belief. Make it slightly provocative.
+   Examples:
+   "Hiring more staff is NOT the answer to slow customer service."
+   "Your WhatsApp inbox is silently killing your business."
+   "The biggest lie in business: 'We'll get back to you shortly.'"
+
+2. EXPLAIN THE CLAIM — Back it up with logic and reality. 2-3 sentences.
+
+3. THE REAL PROBLEM — Reframe what they think the issue is vs what it actually is.
+   Example: "You don't have a staffing problem. You have an automation problem."
+
+4. THE SOLUTION — Introduce the product as the smarter path.
+
+5. HOW IT WORKS (plain language, conversational, 3-4 sentences)
+
+6. BENEFIT CHECKLIST (✅ format, 5 items)
+
+7. PROOF LINE — One line of social validation or a result.
+
+8. TARGET AUDIENCES (💼 with * bullets)
+
+9. CLOSING CTA — Tie back to the opening bold claim.
+""",
+
+        "question_led": """
+NARRATIVE STYLE: QUESTION-LED (Socratic Pull)
+
+Write the full_caption by opening with questions the reader answers "yes" to in their head:
+
+1. QUESTION SERIES — 4-5 direct questions hitting their pain points. Each one should make them nod.
+   Example:
+   "Are you still replying to customer messages manually?
+   Do you find yourself answering the same questions over and over?
+   Have you ever lost a customer simply because you replied too late?
+   Is your business available 24/7 — or only when YOU are awake?"
+
+2. ACKNOWLEDGEMENT — Validate their experience.
+   Example: "If you answered yes to any of these — you're not alone. And there IS a better way."
+
+3. INTRODUCE THE SOLUTION
+
+4. WHAT IT DOES (✅ checklist, 5-6 items)
+
+5. DIFFERENTIATION paragraph
+
+6. POSSIBILITY QUESTIONS (future-focused):
+   Example:
+   "What if your business replied instantly at 3am?
+   What if every customer felt heard — automatically?
+   What if you could focus on growth while your assistant handled support?"
+
+7. TARGET AUDIENCES (💼 with * bullets)
+
+8. CLOSING CTA
+""",
+
+        "before_after": """
+NARRATIVE STYLE: BEFORE vs AFTER TRANSFORMATION (Visual Contrast)
+
+Write the full_caption as a dramatic before/after transformation:
+
+1. BEFORE PICTURE — Paint the painful "before" state vividly. Present tense. Raw and real.
+   Example:
+   "BEFORE:
+   📵 Messages pile up overnight
+   😤 Same questions answered 30 times a day
+   ⏰ Customers waiting hours for simple replies
+   💸 Sales slipping through unanswered chats
+   🥵 You, burnt out and still falling behind"
+
+2. THE SHIFT LINE — One powerful sentence between before and after.
+   Example: "Then everything changed." or "Until [product] entered the picture."
+
+3. AFTER PICTURE — The transformed reality. Same format, opposite energy.
+   Example:
+   "AFTER:
+   ✅ Every message answered in seconds — automatically
+   ✅ Customers served 24/7 without lifting a finger
+   ✅ Your time freed for what actually grows the business
+   ✅ More sales. Less stress. Zero missed chats.
+   ✅ A business that works even while you sleep"
+
+4. HOW — Brief explanation of what makes it possible (3-4 sentences)
+
+5. WHO IT IS FOR (💼 with * bullets)
+
+6. PROOF LINE — One result or social validation sentence.
+
+7. URGENCY STATEMENT
+
+8. CLOSING CTA
+""",
+    }
+    return styles.get(style, styles["hook_checklist"])
+
 
 def build_instructions(
     platform: str,
@@ -102,12 +348,16 @@ def build_instructions(
     client_now_utc_iso: Optional[str] = None,
     timezone: str = "Europe/London",
     posting_hour_local: int = 9,
+    force_style: Optional[str] = None,
 ) -> str:
-    base = f"""
-You are a professional copywriter creating commercial advertisements for {platform}.
-Write in SIMPLE, CLEAR ENGLISH that anyone can understand — like explaining to a smart student.
 
-Start with a scenario, something like, many org live in the past doing.. But according to the topic.
+    # Pick style — forced for testing, random for production
+    style = force_style or random.choice(AD_STYLES)
+    style_instructions = get_ad_style_instructions(style)
+
+    base = f"""
+You are a professional copywriter creating commercial advertisements for {platform}. use "neuroflow AI" to differenciate from other neuroflow names.
+Write in SIMPLE, CLEAR ENGLISH that anyone can understand — like explaining to a smart student.
 
 🚨 CRITICAL FORMATTING RULES - READ FIRST:
 ❌ ABSOLUTELY NO Markdown syntax (no **, no *, no _, no #, no backticks, no ~~)
@@ -126,79 +376,37 @@ RIGHT: "This is amazing technology" or "This is AMAZING technology"
 
 CRITICAL: Generate TWO outputs:
 1. Individual fields (hook, subheading, bullets, proof, cta) - SHORT versions for structured data (all plain text)
-2. full_caption field - COMPLETE formatted ad with ALL sections below (all plain text)
+2. full_caption field - COMPLETE formatted ad using the narrative style below (all plain text)
 
-COMPLETE AD STRUCTURE (for full_caption field):
-Write the full_caption as a multi-paragraph formatted post following this EXACT structure:
+{style_instructions}
 
-1. OPENING HOOK (Emoji + Statement - PLAIN TEXT):
-   Example: "🚀 Introducing the Future of Customer Communication!"
-   
-2. PRODUCT INTRODUCTION (Plain text, one clear sentence):
-   Example: "Meet the NEW groundbreaking WhatsApp Chatbot Software designed for businesses, schools, institutions, and organizations that want to grow faster and serve customers 24/7."
-
-3. IMAGINATION SECTION:
-   Example: "Imagine having a smart assistant that:"
-
-4. BENEFIT CHECKLIST (✅ format, 5-6 items - plain text only):
-   Example:
-   "✅ Replies to customers instantly on WhatsApp
-   ✅ Answers questions automatically
-   ✅ Books appointments and sends reminders
-   ✅ Handles customer support without human stress
-   ✅ Works day and night — even when you are offline"
-
-5. DIFFERENTIATION (Plain text):
-   Example: "This is not just a chatbot. This is a powerful AI assistant built to increase your sales, save your time, and improve your customer experience."
-
-6. TARGET AUDIENCES (💼 emoji - plain text bullets with *):
-   Example:
-   "💼 Perfect for:
-   * Businesses & Startups
-   * Schools & Universities
-   * Hospitals & Clinics
-   * NGOs & Organizations
-   * Online Shops & Services"
-
-7. WHY CHOOSE US (🔹 format - plain text):
-   Example:
-   "Why This Now?
-   🔹 Easy to use
-   🔹 Fast setup
-   🔹 Affordable for growing businesses
-   🔹 Smart AI conversations
-   🔹 Custom solution for YOUR organization"
-
-8. URGENCY STATEMENT (Plain text):
-   Example: "Stop losing customers because of late replies. Start converting chats into real revenue on WhatsApp today!"
-
-9. VALUE PROPOSITIONS (3 emoji lines - plain text):
-   Example:
-   "📈 Turn conversations into customers.
-   📲 Automate your business.
-   🌍 Grow your brand with intelligent WhatsApp chatbots."
-
-10. CLOSING CTA (Plain text):
-    Example: "Contact us today and let your business speak automatically, professionally, and intelligently — 24/7."
+UNIVERSAL RULES (apply to ALL narrative styles):
+- Write in a warm, direct, human voice — never robotic or corporate
+- Use plain text only — no markdown bold (**), no headers with #
+- Emojis are allowed and encouraged where specified
+- Keep paragraphs short — maximum 3 sentences each
+- The caption must feel like it was written by a human marketer, not a template
+- End with a strong, specific CTA relevant to the product
+- Total length: 250-400 words
 
 FORMATTING RULES FOR full_caption:
-- Use PLAIN TEXT only - absolutely NO Markdown formatting whatsoever
+- Use PLAIN TEXT only — absolutely NO Markdown formatting whatsoever
 - NO ** for bold, NO * for italics, NO _ for underline, NO # for headers
 - Use proper line breaks between sections for readability
 - Include ALL emojis (🚀, ✅, 💼, 🔹, 📈, 📲, 🌍, etc.) for visual appeal
-- Use bullet points with * at line start for lists (literal asterisks for bullets, NOT markdown emphasis)
-- For emphasis, use emojis or UPPERCASE words (use sparingly, not every sentence)
+- Use bullet points with * at line start for lists (literal asterisks for bullets, NOT markdown)
+- For emphasis, use emojis or UPPERCASE words (sparingly, not every sentence)
 - Keep it readable and well-spaced with blank lines between sections
 - Total length: 15-30 lines of text
-- Make it ready to copy-paste directly into social media posts
+- Make it ready to copy-paste directly into social media
 
 LANGUAGE STYLE:
-✅ Simple 8th-grade English - clear and easy to understand
-✅ Short, clear sentences - avoid complexity
+✅ Simple, clear English — easy to understand
+✅ Short, clear sentences — avoid complexity
 ✅ Active voice: "You get X" not "X is provided"
 ✅ Specific numbers when possible: "Save 5 hours daily" not "Save time"
-✅ Conversational but professional - like a friendly expert
-✅ Enthusiastic and helpful tone - make people excited
+✅ Conversational but professional — like a friendly expert
+✅ Enthusiastic and helpful tone — make people excited to act
 
 AVOID:
 ❌ Markdown formatting of any kind (**, *, _, #, `, ~~)
@@ -238,44 +446,60 @@ SCHEDULING RULES:
     image_prompt_rules = f"""
 IMAGE PROMPT RULES (CRITICAL - READ CAREFULLY):
 
-YOU MUST GENERATE EXTREMELY SIMPLE BACKGROUNDS:
+YOU MUST GENERATE EXTREMELY BACKGROUNDS:
 
 MANDATORY REQUIREMENTS:
 1. ONLY 1-2 solid colors (use brand colors if provided, otherwise: green, blue, yellow, orange, purple, red)
-2. MAXIMUM 1 simple object OR zero objects (strongly prefer zero objects)
-3. If including 1 object: must be simple geometric shape ONLY (circle, rounded square, leaf shape, abstract curve)
+2. MAXIMUM 1 object OR zero objects (strongly prefer zero objects)
+3. If including 1 object: must be geometric shape ONLY (circle, rounded square, leaf shape, abstract curve)
 4. NO complex illustrations, NO multiple objects, NO 3D renders, NO detailed textures, NO patterns
 5. Portrait orientation 4:5 (1080x1350)
 6. 80%+ of canvas should be EMPTY solid color for text placement
 7. Keep prompt under 15 words maximum
 
 GOOD EXAMPLES (copy this exact style):
-✅ "Solid vibrant green background, flat design, portrait 4:5, no objects"
-✅ "Bright yellow background, one white circle top-right corner, minimalist flat, portrait"
-✅ "Solid orange background, small leaf shape bottom-left, simple flat, 4:5"
-✅ "Two-color background: blue top, white bottom, clean division, portrait 4:5"
-✅ "Solid lime green, subtle gradient, completely empty, portrait, commercial ad"
-✅ "White background, 2 small yellow circles one corner, flat minimal, portrait"
-✅ "Solid red background, no objects, flat graphic design, portrait 4:5"
-✅ "Purple solid color, one green circle, simple, portrait orientation"
+✅ "Professional marketing advertisement photo for AI WhatsApp chatbot.
+
+Main subject:
+Business owner holding smartphone showing WhatsApp chatbot conversation.
+
+Scene:
+Clean blue gradient background,
+modern office lighting,
+minimal environment.
+
+Composition:
+Phone centered,
+person slightly to side,
+clean empty space for text.
+
+Style:
+Ultra realistic photography,
+agency advertisement,
+soft shadows,
+premium lighting.
+
+Portrait 4:5 composition.
+No text."
 
 BAD EXAMPLES (NEVER generate like this):
+❌ "Business team in a modern office analyzing AI data on tablets and screens, bright lighting, clean professional setting, portrait 4:5".
 ❌ "Colorful 3D shapes, multiple objects, complex composition..."
 ❌ "Vibrant abstract design with many elements and textures..."
 ❌ "Playful arrangement of geometric shapes scattered across..."
 ❌ "Dynamic colorful background with various elements..."
 ❌ Any prompt with words: multiple, various, collection, arrangement, scattered, dynamic, playful, complex, detailed, realistic texture, 3D, rendered
 
-SIMPLICITY CHECKLIST - YOUR PROMPT MUST PASS ALL:
+SIMPLICITY CHECKLIST — YOUR PROMPT MUST PASS ALL:
 - Colors: 1 or 2 only? ✓
-- Objects: 0 or 1 simple shape? ✓
+- Objects: 0 or 1 shape? ✓
 - Empty space: 80%+ for text? ✓
 - Portrait 4:5 ratio? ✓
 - Under 15 words? ✓
 - No complex descriptors? ✓
 
-FINAL OUTPUT: One very short sentence (10-15 words maximum) describing the simple colored background.
-Example format: "Solid [color] background, [optional: one simple shape location], flat design, portrait 4:5"
+FINAL OUTPUT: One very short sentence (10-15 words maximum) describing the colored background.
+Example format: "Solid [color] background, [optional: one shape location], flat design, portrait 4:5"
 """.strip()
 
     return "\n\n".join([base, scheduling, image_prompt_rules]).strip()
@@ -307,23 +531,67 @@ def generate_post(
     )
 
     user_input = f"""
+
 {brand_ctx}
 
+
 TOPIC:
+
 {topic_text}
 
+
 PLATFORM:
+
 {platform}
 
+
 Generate:
+
 1. A complete formatted advertisement in the 'full_caption' field following ALL 10 steps with emojis and proper formatting - USE PLAIN TEXT ONLY, NO MARKDOWN
+
 2. Individual short fields (hook, subheading, bullets, proof, cta) for structured data - ALL PLAIN TEXT, NO MARKDOWN
-3. A VERY SIMPLE image_prompt: just 1-2 solid colors with 0-1 objects maximum, under 15 words
+
+3. A PROFESSIONAL marketing image_prompt describing a realistic advertisement scene based on the topic.
+
+
+
+IMAGE PROMPT RULES:
+
+- The image MUST visually represent the TOPIC
+- Include the PRODUCT or SERVICE being advertised
+- Include realistic people when appropriate
+- Include UI screens when relevant (chatbot, dashboard, app)
+- Should look like a professional agency advertisement
+- Clean modern background
+- Realistic lighting
+- Portrait 4:5 composition
+- Maximum 40 words
+
+
+
+GOOD EXAMPLES:
+
+Chatbot:
+"Professional woman holding phone showing WhatsApp chatbot conversation, clean blue background, modern marketing style, portrait 4:5"
+
+Furniture:
+"Luxury sofa in modern living room, natural light, clean interior design, premium photography, portrait 4:5"
+
+Voice AI:
+"Business owner talking on smartphone, call interface visible, modern office background, marketing style, portrait 4:5"
+
+
 
 CRITICAL REMINDERS:
-- NO ** or * or _ or # for formatting (plain text only)
-- Image prompt must be extremely simple (like "Solid green background, flat, portrait 4:5")
-- Full caption should be 15-30 lines with emojis, bullets, and line breaks
+
+- NO ** or * or _ or # formatting
+
+- Full caption should be long with emojis and line breaks
+
+- Image must clearly show the topic visually
+
+- Avoid abstract backgrounds only
+
 """.strip()
 
     resp = client.responses.parse(
