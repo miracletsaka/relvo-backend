@@ -48,9 +48,11 @@ def _random_link(draft_id: str) -> Optional[str]:
     Randomly return a share link or None.
     """
 
-    probability = float(os.getenv("LINK_PROBABILITY", "0.9"))
+    probability = float(os.getenv("LINK_PROBABILITY", "0.4"))
     # Example: 0.4 = 40% posts will have clickable links
 
+    if random.random() > probability:
+        return None
 
     base = os.getenv("PUBLIC_SITE_BASE_URL", "https://neuroflowai.co.uk")
     return f"{base}/content/{draft_id}"
