@@ -105,238 +105,161 @@ AD_STYLES = [
     "question_led",
     "before_after",
 ]
-
 def get_ad_style_instructions(style: str) -> str:
     styles = {
 
         "hook_checklist": """
-NARRATIVE STYLE: HOOK + CHECKLIST (Classic Direct Response)
+STYLE: Hook + Checklist
 
-Write the full_caption using this structure:
-1. OPENING HOOK (Emoji + bold statement that stops the scroll)
-2. PRODUCT INTRODUCTION (one clear sentence — what it is and who it's for)
-3. "Imagine having a smart assistant that:" (lead into checklist)
-4. BENEFIT CHECKLIST (✅ format, 5-6 items — plain text only)
-5. DIFFERENTIATION paragraph (what makes this different)
-6. TARGET AUDIENCES (💼 with * bullets)
-7. WHY CHOOSE US (🔹 format, 5 items)
-8. URGENCY STATEMENT (one punchy line)
-9. VALUE PROPOSITIONS (3 emoji lines)
-10. CLOSING CTA
+Example structure:
+🚀 Stop replying to customers manually.
+
+Our AI WhatsApp assistant answers customers instantly and captures leads for you.
+
+Imagine having an assistant that:
+✅ Replies instantly 24/7
+✅ Answers common questions automatically
+✅ Captures leads while you sleep
+✅ Books appointments
+✅ Never misses a message
+
+Perfect for:
+💼 * Online stores
+💼 * Service businesses
+💼 * Busy founders
+
+Start automating your customer conversations today.
 """,
 
         "story": """
-NARRATIVE STYLE: PERSONAL STORY (Emotional Journey)
+STYLE: Personal Story
 
-Write the full_caption as a personal story that leads into the product:
+Example:
+A few months ago, a small business owner was drowning in WhatsApp messages. Customers waited hours for replies.
 
-1. STORY OPENING — Start with "I remember when..." or "A few months ago..." or "Last year, [type of business] was struggling with..."
-   Make it relatable, emotional, specific. 2-3 sentences.
+Then they installed an AI assistant.
 
-2. THE STRUGGLE — Describe the pain vividly. What was being lost? Time? Money? Customers?
-   Example: "Every night, messages piled up. Customers asking questions at 2am. No one to reply. Orders lost. Trust broken."
+Within weeks:
+✅ Replies became instant
+✅ Customers got answers 24/7
+✅ Sales started increasing
 
-3. THE TURNING POINT — Introduce the product as the discovery that changed everything.
-   Example: "Then we discovered something that changed everything."
+Now the business runs smoother — even at night.
 
-4. THE TRANSFORMATION — Show specific results after using it. Use numbers or feelings.
-   Example: "Within 2 weeks: response time dropped from 8 hours to 3 seconds. Sales went up. Stress went down."
-
-5. BENEFIT CHECKLIST (✅ format, 4-5 items — frame as what they now enjoy)
-
-6. INVITATION — Invite the reader into the same transformation.
-
-7. TARGET AUDIENCES (💼 with * bullets)
-
-8. CLOSING CTA with urgency
+If you run a business that receives messages daily, this could help you too.
 """,
 
         "scenario": """
-NARRATIVE STYLE: VIVID SCENARIO (Scene Painting)
+STYLE: Scenario
 
-Write the full_caption by painting a vivid scenario the reader recognizes:
+Example:
+It's 11pm. Your phone keeps buzzing. Customers asking the same questions again and again.
 
-1. SCENE SETTER — Drop them into a specific moment. Use "It's 11pm..." or "Picture this:" or "You just got back from work..."
-   Make it hyper-specific and visual. The reader should say "that's me."
-   Example: "It's Friday evening. You're exhausted. But your phone won't stop buzzing — customer after customer asking the same questions. And you're the only one who can answer."
+Now imagine every message getting an instant reply.
 
-2. THE FRUSTRATION — Amplify the emotion. Don't rush to the solution.
-   Example: "You wanted to rest. Instead you're typing replies manually. Again. For the 47th time today."
+With an AI WhatsApp assistant:
+✅ Customers get answers immediately
+✅ Orders are captured automatically
+✅ You stop replying manually
 
-3. WHAT IF — Pivot with a "What if it didn't have to be this way?" moment.
+Hundreds of businesses already automate their chats.
 
-4. INTRODUCE THE SOLUTION — Bring in the product as the exact answer to that scenario.
-
-5. HOW IT WORKS (simple, plain language — 3-4 sentences max)
-
-6. BENEFIT CHECKLIST (✅ format, 5 items)
-
-7. WHO THIS IS FOR (💼 with * bullets)
-
-8. PROOF LINE — "Hundreds of businesses are already doing this."
-
-9. CLOSING CTA
+Your business can too.
 """,
 
         "problem_agitate": """
-NARRATIVE STYLE: PROBLEM → AGITATE → SOLVE (PAS Framework)
+STYLE: Problem → Solution
 
-Write the full_caption using the PAS copywriting framework:
+Example:
+You're losing customers because replies are too slow.
 
-1. PROBLEM — State the core problem clearly and directly. One punchy sentence.
-   Example: "You're losing customers every single day — and you don't even know it."
+Every unanswered message is a missed sale.
 
-2. AGITATE — Make the problem feel urgent and painful. Use rhetorical questions.
-   Example:
-   "How many messages went unanswered last night?
-   How many potential buyers moved on to your competitor?
-   How many times did a customer ask a simple question — and nobody replied for hours?
-   Every delayed reply is a lost sale. Every missed message is broken trust."
+What if every customer received an instant reply?
 
-3. AMPLIFY THE COST — Make them feel the real cost of inaction.
-   Example: "Over a month, that's hundreds of missed opportunities. Over a year? It could be the difference between a thriving business and a struggling one."
+This AI assistant can:
+✅ Reply instantly
+✅ Answer FAQs automatically
+✅ Capture leads
+✅ Work 24/7
 
-4. INTRODUCE THE SOLUTION — Present the product as the precise fix.
-
-5. HOW IT SOLVES IT (✅ checklist, 5-6 items)
-
-6. DIFFERENTIATION — Why this over other solutions?
-
-7. TARGET AUDIENCES (💼 with * bullets)
-
-8. URGENCY + CLOSING CTA
+Stop missing opportunities.
 """,
 
         "case_study": """
-NARRATIVE STYLE: MINI CASE STUDY (Result-First)
+STYLE: Mini Case Study
 
-Write the full_caption as a mini case study leading with the outcome:
+Example:
+How a small shop tripled conversions using AI chat.
 
-1. RESULT HEADLINE — Lead with the outcome first. Bold and specific.
-   Example: "How a small online shop went from 2-hour reply times to instant responses — and tripled their sales in 30 days."
+Before:
+• 3–4 hour reply times
+• Dozens of missed messages
 
-2. BACKGROUND — Briefly describe who the business was and their situation before.
-   (Can be realistic and hypothetical: "A local clothing boutique...")
+After installing the assistant:
+📊 Reply time: seconds
+📈 More leads captured
+⭐ Happier customers
 
-3. THE PROBLEM THEY HAD — Specific challenges. Numbers help.
-   Example: "They were getting 200+ messages a day. One person managing everything. Average reply time: 4 hours. Customers were leaving."
-
-4. WHAT THEY DID — Introduce the product as the solution they chose.
-
-5. THE RESULTS — Specific, tangible outcomes with numbers.
-   Example:
-   "📊 Reply time: 4 hours → 3 seconds
-   📈 Sales conversion: up 40%
-   😌 Team stress: dramatically reduced
-   ⭐ Customer satisfaction: all-time high"
-
-6. WHAT MADE IT WORK (✅ checklist — key features that drove results)
-
-7. "YOUR BUSINESS CAN DO THIS TOO" — Transition to the offer.
-
-8. TARGET AUDIENCES (💼 with * bullets)
-
-9. CLOSING CTA
+Key features:
+✅ Instant replies
+✅ Automated answers
+✅ 24/7 availability
 """,
 
         "controversial": """
-NARRATIVE STYLE: BOLD CLAIM / MYTH BUSTER (Pattern Interrupt)
+STYLE: Bold Claim
 
-Write the full_caption starting with a bold claim that stops the scroll:
+Example:
+Hiring more staff won't fix slow customer replies.
 
-1. CONTROVERSIAL OPENER — Challenge a common belief. Make it slightly provocative.
-   Examples:
-   "Hiring more staff is NOT the answer to slow customer service."
-   "Your WhatsApp inbox is silently killing your business."
-   "The biggest lie in business: 'We'll get back to you shortly.'"
+The real problem is manual messaging.
 
-2. EXPLAIN THE CLAIM — Back it up with logic and reality. 2-3 sentences.
+Smart businesses now use AI assistants that:
+✅ Reply instantly
+✅ Handle repetitive questions
+✅ Capture leads automatically
 
-3. THE REAL PROBLEM — Reframe what they think the issue is vs what it actually is.
-   Example: "You don't have a staffing problem. You have an automation problem."
-
-4. THE SOLUTION — Introduce the product as the smarter path.
-
-5. HOW IT WORKS (plain language, conversational, 3-4 sentences)
-
-6. BENEFIT CHECKLIST (✅ format, 5 items)
-
-7. PROOF LINE — One line of social validation or a result.
-
-8. TARGET AUDIENCES (💼 with * bullets)
-
-9. CLOSING CTA — Tie back to the opening bold claim.
+Automation is becoming the new customer service standard.
 """,
 
         "question_led": """
-NARRATIVE STYLE: QUESTION-LED (Socratic Pull)
+STYLE: Question Led
 
-Write the full_caption by opening with questions the reader answers "yes" to in their head:
+Example:
+Do customers message your business every day?
 
-1. QUESTION SERIES — 4-5 direct questions hitting their pain points. Each one should make them nod.
-   Example:
-   "Are you still replying to customer messages manually?
-   Do you find yourself answering the same questions over and over?
-   Have you ever lost a customer simply because you replied too late?
-   Is your business available 24/7 — or only when YOU are awake?"
+Do you answer the same questions repeatedly?
 
-2. ACKNOWLEDGEMENT — Validate their experience.
-   Example: "If you answered yes to any of these — you're not alone. And there IS a better way."
+Have you ever replied too late and lost a sale?
 
-3. INTRODUCE THE SOLUTION
+An AI assistant can:
+✅ Reply instantly
+✅ Answer FAQs
+✅ Capture leads 24/7
 
-4. WHAT IT DOES (✅ checklist, 5-6 items)
-
-5. DIFFERENTIATION paragraph
-
-6. POSSIBILITY QUESTIONS (future-focused):
-   Example:
-   "What if your business replied instantly at 3am?
-   What if every customer felt heard — automatically?
-   What if you could focus on growth while your assistant handled support?"
-
-7. TARGET AUDIENCES (💼 with * bullets)
-
-8. CLOSING CTA
+Imagine never missing a customer message again.
 """,
 
         "before_after": """
-NARRATIVE STYLE: BEFORE vs AFTER TRANSFORMATION (Visual Contrast)
+STYLE: Before vs After
 
-Write the full_caption as a dramatic before/after transformation:
+Example:
 
-1. BEFORE PICTURE — Paint the painful "before" state vividly. Present tense. Raw and real.
-   Example:
-   "BEFORE:
-   📵 Messages pile up overnight
-   😤 Same questions answered 30 times a day
-   ⏰ Customers waiting hours for simple replies
-   💸 Sales slipping through unanswered chats
-   🥵 You, burnt out and still falling behind"
+BEFORE
+❌ Messages pile up
+❌ Customers wait hours
+❌ Sales are missed
 
-2. THE SHIFT LINE — One powerful sentence between before and after.
-   Example: "Then everything changed." or "Until [product] entered the picture."
+AFTER
+✅ Instant replies
+✅ Customers served 24/7
+✅ More leads captured
 
-3. AFTER PICTURE — The transformed reality. Same format, opposite energy.
-   Example:
-   "AFTER:
-   ✅ Every message answered in seconds — automatically
-   ✅ Customers served 24/7 without lifting a finger
-   ✅ Your time freed for what actually grows the business
-   ✅ More sales. Less stress. Zero missed chats.
-   ✅ A business that works even while you sleep"
-
-4. HOW — Brief explanation of what makes it possible (3-4 sentences)
-
-5. WHO IT IS FOR (💼 with * bullets)
-
-6. PROOF LINE — One result or social validation sentence.
-
-7. URGENCY STATEMENT
-
-8. CLOSING CTA
+All powered by an AI messaging assistant.
 """,
     }
+
     return styles.get(style, styles["hook_checklist"])
 
 
