@@ -34,10 +34,14 @@ class TopicChatCreateRequest(TopicChatPreviewRequest):
     posting_hour_local: int | None = 9
 
 @router.post("")
-def create_topic_chat_and_generate(payload: TopicChatCreateRequest, db: Session = Depends(get_db)):
+def create_topic_chat_and_generate(
+    payload: TopicChatCreateRequest,
+    db: Session = Depends(get_db),
+):
+    # 1) Create the TopicChat row immediately so the client gets an ID
     chat_id = uuid.uuid4()
-    now = datetime.now(timezone.utc)
-
+    now     = datetime.now(timezone.utc)
+ 
     chat = TopicChat(
         id=chat_id,
         brand_id=payload.brand_id,
@@ -47,23 +51,48 @@ def create_topic_chat_and_generate(payload: TopicChatCreateRequest, db: Session 
         created_at=now,
         updated_at=now,
     )
-
     db.add(chat)
-    db.commit()
-
-    res = generate_monthly_drafts(
-        db=db,
-        topic_chat_id=chat_id,
-        brand_id=payload.brand_id,
-        topic=payload.topic,
-        target_month=payload.target_month,
-        posts_per_week=payload.posts_per_week,
-        client_now=payload.client_now,
-        timezone=payload.timezone or "Europe/London",
-        posting_hour_local=payload.posting_hour_local or 9,
-    )
-
-    return {"topic_chat_id": str(chat_id), **res}
+    db.commit()   # commit BEFORE generation so ID is visible for polling
+ 
+    # 2) Load brand profile for richer AI context
+    brand_profile_summary: str | None = None
+    brand_profile_json:    dict | None = None
+    try:
+        brand = db.execute(
+            select(brand).where(brand.id == payload.brand_id)
+        ).scalars().first()
+        if brand:
+            brand_profile_summary = getattr(brand, "profile_summary", None)
+            brand_profile_json    = getattr(brand, "profile_json",    None)
+    except Exception as e:
+        print(f"[topic_chats] Brand load warning (non-fatal): {e}")
+ 
+    # 3) Generate drafts (may take 30-120 s depending on platform count)
+    try:
+        res = generate_monthly_drafts(
+            db=db,
+            topic_chat_id=chat_id,
+            brand_id=payload.brand_id,
+            topic=payload.topic,
+            target_month=payload.target_month,
+            posts_per_week=payload.posts_per_week,
+            brand_profile_summary=brand_profile_summary,
+            brand_profile_json=brand_profile_json,
+            client_now=payload.client_now,
+            timezone=payload.timezone or "Europe/London",
+            posting_hour_local=payload.posting_hour_local or 9,
+        )
+    except Exception as e:
+        # Don't delete the chat — client can still poll drafts
+        print(f"[topic_chats] Generation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+ 
+    print(f"[topic_chats] Done: {res}")
+ 
+    return {
+        "topic_chat_id": str(chat_id),
+        **res,
+    }
 
 @router.get("/{chat_id}")
 def get_topic_chat(chat_id: str, db: Session = Depends(get_db)):

@@ -311,7 +311,6 @@ def update_content_media(content_item_id: str, payload: UpdateMediaRequest, db: 
     - Else if it matches a ContentDraft -> update ContentDraft media
     This lets the UI keep calling the SAME endpoint for drafts too.
     """
-    print("payload:", payload)
     # validate media_type if provided
     if payload.media_type and payload.media_type not in ("image", "video"):
         raise HTTPException(status_code=400, detail="media_type must be 'image' or 'video'")

@@ -60,6 +60,8 @@ def generate_monthly_drafts(
     for i in range(total_posts):
         plat = platform_ids[i % len(platform_ids)]
 
+        print(f"Generating post {i+1}/{total_posts} for platform {plat}...")
+
         try:
             result = generate_post(
                 topic_text=topic,
@@ -73,6 +75,8 @@ def generate_monthly_drafts(
                 timezone=timezone,
                 posting_hour_local=posting_hour_local,
             )
+
+            print(f"Result for post {i+1}:\n", result)
 
             caption = (result.get("body_text") or "").strip() or None
             structured = result.get("structured") or {}

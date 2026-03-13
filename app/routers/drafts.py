@@ -143,7 +143,7 @@ def bulk_reject(
     payload: dict,
     db: Session = Depends(get_db),
 ):
-    ids = payload.get("ids", [])
+    ids = payload.get("content_item_ids", [])
     reason = payload.get("reason")
 
     if not ids:
@@ -188,3 +188,13 @@ def get_draft_alias(draft_id: str, db: Session = Depends(get_db)):
 
     chat = db.execute(select(TopicChat).where(TopicChat.id == draft.topic_chat_id)).scalar_one_or_none()
     return _draft_to_dict(draft, chat)
+
+
+@router.delete("/{draft_id}")
+async def delete_draft(draft_id: str, db: Session = Depends(get_db)):
+    draft = db.query(ContentDraft).filter(ContentDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    db.delete(draft)
+    db.commit()
+    return {"deleted": draft_id}

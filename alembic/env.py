@@ -34,7 +34,11 @@ from app.models.job import Job  # noqa: F401
 from app.models.topic_chat import TopicChat  # noqa: F401
 from app.models.content_draft import ContentDraft  # noqa: F401
 from app.models.content_item import ContentItem  # noqa: F401
-from app.models.template import Template 
+from app.models.template import Template
+# alembic/env.py
+from app.models.media_asset import MediaAsset  # ← add this
+from app.database import Base
+target_metadata = Base.metadata
 
 target_metadata = Base.metadata
 

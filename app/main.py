@@ -23,6 +23,7 @@ from app.routers import topic_chats
 from app.routers import drafts
 from app.routers import content_drafts
 from app.routers import templates
+from app.routers import media_assets_backend
 
 # Create FastAPI app FIRST
 app = FastAPI(title="AI Marketing System")
@@ -63,6 +64,7 @@ app.include_router(topic_chats.router)
 app.include_router(drafts.router)
 app.include_router(content_drafts.router)
 app.include_router(templates.router)
+app.include_router(media_assets_backend.router, prefix="/media-assets", tags=["media-assets"])
 # Health check
 @app.get("/")
 def health_check():

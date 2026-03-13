@@ -2,17 +2,20 @@
 import os
 import json
 import re
-from typing import Dict, Any, Optional, List
+import math
 import random
-from typing import Optional
+from datetime import datetime, timezone, timedelta
+from typing import Dict, Any, Optional, List
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _safe_list(x):
     if not x:
@@ -22,28 +25,40 @@ def _safe_list(x):
     return [x]
 
 
+def strip_markdown(text: str) -> str:
+    if not text:
+        return text
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    text = re.sub(r'__(.*?)__',     r'\1', text)
+    text = re.sub(r'\*(.*?)\*',     r'\1', text)
+    text = re.sub(r'_(.*?)_',       r'\1', text)
+    text = re.sub(r'^#{1,6}\s+',    '',    text, flags=re.MULTILINE)
+    text = re.sub(r'~~(.*?)~~',     r'\1', text)
+    text = text.replace('`', '')
+    return text
+
+
 def _brand_context_block(
     brand_id: str,
     brand_profile_summary: Optional[str] = None,
-    brand_profile_json: Optional[dict[str, Any]] = None,
+    brand_profile_json: Optional[Dict[str, Any]] = None,
 ) -> str:
-    tone_tags = []
-    services = []
-    audiences = []
+    tone_tags   = []
+    services    = []
+    audiences   = []
     positioning = []
-    cta_style = None
-    colors = []
+    cta_style   = None
+    colors      = []
 
     if isinstance(brand_profile_json, dict):
-        tone_tags = _safe_list((brand_profile_json.get("tone") or {}).get("tags"))
-        services = _safe_list(brand_profile_json.get("products_services"))
-        audiences = _safe_list(brand_profile_json.get("audiences"))
+        tone_tags   = _safe_list((brand_profile_json.get("tone") or {}).get("tags"))
+        services    = _safe_list(brand_profile_json.get("products_services"))
+        audiences   = _safe_list(brand_profile_json.get("audiences"))
         positioning = _safe_list((brand_profile_json.get("positioning") or {}).get("value_props"))
-        cta_style = brand_profile_json.get("cta_style")
-        colors = _safe_list(brand_profile_json.get("colors"))
+        cta_style   = brand_profile_json.get("cta_style")
+        colors      = _safe_list(brand_profile_json.get("colors"))
 
-    return f"""
-BRAND CONTEXT:
+    return f"""BRAND CONTEXT:
 Brand: {brand_id}
 Summary: {brand_profile_summary or "(No summary provided)"}
 Tone tags: {", ".join(map(str, tone_tags)) if tone_tags else "(not provided)"}
@@ -51,514 +66,322 @@ Audiences: {", ".join(map(str, audiences)) if audiences else "(not provided)"}
 Products/Services: {", ".join(map(str, services)) if services else "(not provided)"}
 Value props: {", ".join(map(str, positioning)) if positioning else "(not provided)"}
 CTA style: {json.dumps(cta_style, ensure_ascii=False) if cta_style else "(not provided)"}
-Colors: {", ".join(map(str, colors)) if colors else "(not provided)"}
-""".strip()
+Colors: {", ".join(map(str, colors)) if colors else "(not provided)"}""".strip()
 
+
+# ── Pre-compute the schedule slots so the model just picks from a list ────────
+# This is the KEY fix — instead of asking GPT to do timezone math
+# (which it gets wrong), we compute exact UTC timestamps in Python
+# and hand it a numbered list to assign one slot per post.
+
+def _compute_schedule_slots(
+    target_month: str,
+    posts_per_week: int,
+    client_now_utc_iso: Optional[str],
+    timezone: str,
+    posting_hour_local: int,
+    n_posts: int,
+) -> List[str]:
+    """
+    Returns a list of ISO-8601 UTC timestamps (ending in Z), one per post,
+    spread evenly across target_month on weekdays at posting_hour_local.
+    Skips any dates that are in the past relative to client_now_utc_iso.
+    """
+    try:
+        tz = ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, Exception):
+        tz = ZoneInfo("Europe/London")
+
+    # Parse target month
+    try:
+        year, month = int(target_month[:4]), int(target_month[5:7])
+    except Exception:
+        now = datetime.now(tz)
+        year, month = now.year, now.month
+
+    # Current time floor
+    if client_now_utc_iso:
+        try:
+            now_utc = datetime.fromisoformat(client_now_utc_iso.replace("Z", "+00:00"))
+        except Exception:
+            now_utc = datetime.now(timezone.utc)
+    else:
+        now_utc = datetime.now(timezone.utc)
+
+    # Build all weekday slots for the month
+    import calendar
+    days_in_month = calendar.monthrange(year, month)[1]
+    all_slots: List[datetime] = []
+    for day in range(1, days_in_month + 1):
+        local_dt = datetime(year, month, day, posting_hour_local, 0, 0, tzinfo=tz)
+        utc_dt   = local_dt.astimezone(ZoneInfo("UTC"))
+        # Skip weekends (Mon=0 … Fri=4)
+        if local_dt.weekday() > 4:
+            continue
+        # Skip past dates (must be at least 2h in the future)
+        if utc_dt <= now_utc + timedelta(hours=2):
+            continue
+        all_slots.append(utc_dt)
+
+    if not all_slots:
+        # Fallback: next n_posts weekdays from now
+        cursor = now_utc + timedelta(hours=3)
+        while len(all_slots) < n_posts:
+            local_c = cursor.astimezone(tz)
+            if local_c.weekday() <= 4:
+                slot = datetime(local_c.year, local_c.month, local_c.day, posting_hour_local, 0, 0, tzinfo=tz)
+                all_slots.append(slot.astimezone(ZoneInfo("UTC")))
+            cursor += timedelta(days=1)
+
+    # Spread n_posts evenly across available slots
+    if len(all_slots) <= n_posts:
+        chosen = all_slots[:n_posts]
+        # If still not enough, repeat last slot
+        while len(chosen) < n_posts:
+            chosen.append(chosen[-1] + timedelta(days=7))
+    else:
+        step   = len(all_slots) / n_posts
+        chosen = [all_slots[int(i * step)] for i in range(n_posts)]
+
+    return [dt.strftime("%Y-%m-%dT%H:%M:%SZ") for dt in chosen]
+
+
+# ── Structured output schema ──────────────────────────────────────────────────
 
 class PostOutput(BaseModel):
-    hook: str = Field(..., description="Opening hook line only, 10 words max, plain text no markdown")
-    subheading: str = Field(..., description="Product intro line only, 14 words max, plain text no markdown")
-    bullets: List[str] = Field(..., min_length=3, max_length=3, description="3 key benefits, plain text no markdown")
-    proof: str = Field(..., description="Social proof line only, 9 words max, plain text no markdown")
-    cta: str = Field(..., description="Call to action line only, 10 words max, plain text no markdown")
-    full_caption: str = Field(..., description="Complete formatted ad copy with all sections, emojis, bullets, line breaks - 15-30 lines total, ready to post, PLAIN TEXT ONLY NO MARKDOWN")
-    hashtags: List[str] = Field(default_factory=list, description="Array of hashtags like #Tag")
-    scheduled_at: str = Field(..., description="ISO 8601 UTC ends with Z")
-    image_prompt: Optional[str] = Field(default=None, description="Simple background prompt - 1-2 colors, minimal objects, 10-15 words max")
-    video_concept: Optional[str] = Field(default=None)
-    thumbnail_prompt: Optional[str] = Field(default=None)
-    media_prompt: Optional[str] = Field(default=None)
+    hook:          str            = Field(..., description="Opening hook — 10 words max, plain text, no markdown")
+    subheading:    str            = Field(..., description="Product intro line — 14 words max, plain text")
+    bullets:       List[str]      = Field(..., min_length=3, max_length=3, description="Exactly 3 key benefits, plain text")
+    proof:         str            = Field(..., description="Social proof line — 9 words max, plain text")
+    cta:           str            = Field(..., description="Call to action — 10 words max, plain text")
+    full_caption:  str            = Field(..., description="Complete ad copy, 250-400 words, plain text with emojis and line breaks — NO markdown")
+    hashtags:      List[str]      = Field(default_factory=list, description="Array of hashtags like #Tag")
+    scheduled_at:  str            = Field(..., description="One ISO 8601 UTC timestamp from the provided SCHEDULE SLOTS list — copy exactly, ends with Z")
+    image_prompt:  Optional[str]  = Field(default=None, description="Realistic marketing photo prompt, 30-40 words, portrait 4:5")
+    video_concept: Optional[str]  = Field(default=None)
 
 
-def strip_markdown(text: str) -> str:
-    """Remove common Markdown formatting characters"""
-    if not text:
-        return text
-    
-    # Remove bold **text** and __text__
-    text = text.replace('**', '')
-    text = text.replace('__', '')
-    
-    # Remove italic *text* and _text_ (but preserve * for bullet points at line start)
-    # Only remove * that are used for emphasis (not at line start for bullets)
-    text = re.sub(r'(?<!\n)(?<!\n\n)(?<!\n )(?<!^\*)\*(?!\s)', '', text, flags=re.MULTILINE)
-    text = re.sub(r'(?<!^)_(?!$)', '', text, flags=re.MULTILINE)
-    
-    # Remove inline code `text`
-    text = text.replace('`', '')
-    
-    # Remove headers ### text
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-    
-    # Remove strikethrough ~~text~~
-    text = text.replace('~~', '')
-    
-    return text
+# ── Ad style library ──────────────────────────────────────────────────────────
 
 AD_STYLES = [
-    "hook_checklist",
-    "story",
-    "scenario",
-    "problem_agitate",
-    "case_study",
-    "controversial",
-    "question_led",
-    "before_after",
+    "story", "scenario", "problem_agitate",
+    "case_study", "controversial", "question_led", "before_after",
 ]
-def get_ad_style_instructions(style: str) -> str:
-    styles = {
 
-        "hook_checklist": """
-STYLE: Hook + Checklist
+def _get_style_example(style: str) -> str:
+    examples = {
+        "story": """STYLE: Personal Story
+Write as if a real customer is telling their transformation story.
+Open with a relatable struggle, show the turning point, end with the outcome.
+Use "I" or "they" voice. 3-4 short paragraphs + bullet results + CTA.""",
 
-Example structure:
-🚀 Stop replying to customers manually.
+        "scenario": """STYLE: Vivid Scenario
+Paint a specific moment the reader recognises (a time, a place, a frustration).
+Make them nod and say "that's me". Then present the solution as relief.
+Short punchy paragraphs, present tense, end with CTA.""",
 
-Our AI WhatsApp assistant answers customers instantly and captures leads for you.
+        "problem_agitate": """STYLE: Problem → Agitate → Solve
+Name the pain → twist the knife (make it feel worse) → reveal the solution.
+Use short sentences, escalating urgency, then flip to relief + CTA.""",
 
-Imagine having an assistant that:
-✅ Replies instantly 24/7
-✅ Answers common questions automatically
-✅ Captures leads while you sleep
-✅ Books appointments
-✅ Never misses a message
+        "case_study": """STYLE: Mini Case Study
+Before numbers → After numbers → Key features → CTA.
+Use real-feeling metrics (even approximate). Keep it tight: 4 sections.""",
 
-Perfect for:
-💼 * Online stores
-💼 * Service businesses
-💼 * Busy founders
+        "controversial": """STYLE: Contrarian Take
+Open with a bold claim that challenges conventional wisdom.
+Back it up with 2-3 punchy reasons. End with the smarter alternative + CTA.""",
 
-Start automating your customer conversations today.
-""",
+        "question_led": """STYLE: Question Led
+Open with 3 short questions the reader answers "yes" to.
+Build tension, then reveal the solution. Close with a direct CTA.""",
 
-        "story": """
-STYLE: Personal Story
-
-Example:
-A few months ago, a small business owner was drowning in WhatsApp messages. Customers waited hours for replies.
-
-Then they installed an AI assistant.
-
-Within weeks:
-✅ Replies became instant
-✅ Customers got answers 24/7
-✅ Sales started increasing
-
-Now the business runs smoother — even at night.
-
-If you run a business that receives messages daily, this could help you too.
-""",
-
-        "scenario": """
-STYLE: Scenario
-
-Example:
-It's 11pm. Your phone keeps buzzing. Customers asking the same questions again and again.
-
-Now imagine every message getting an instant reply.
-
-With an AI WhatsApp assistant:
-✅ Customers get answers immediately
-✅ Orders are captured automatically
-✅ You stop replying manually
-
-Hundreds of businesses already automate their chats.
-
-Your business can too.
-""",
-
-        "problem_agitate": """
-STYLE: Problem → Solution
-
-Example:
-You're losing customers because replies are too slow.
-
-Every unanswered message is a missed sale.
-
-What if every customer received an instant reply?
-
-This AI assistant can:
-✅ Reply instantly
-✅ Answer FAQs automatically
-✅ Capture leads
-✅ Work 24/7
-
-Stop missing opportunities.
-""",
-
-        "case_study": """
-STYLE: Mini Case Study
-
-Example:
-How a small shop tripled conversions using AI chat.
-
-Before:
-• 3–4 hour reply times
-• Dozens of missed messages
-
-After installing the assistant:
-📊 Reply time: seconds
-📈 More leads captured
-⭐ Happier customers
-
-Key features:
-✅ Instant replies
-✅ Automated answers
-✅ 24/7 availability
-""",
-
-        "controversial": """
-STYLE: Bold Claim
-
-Example:
-Hiring more staff won't fix slow customer replies.
-
-The real problem is manual messaging.
-
-Smart businesses now use AI assistants that:
-✅ Reply instantly
-✅ Handle repetitive questions
-✅ Capture leads automatically
-
-Automation is becoming the new customer service standard.
-""",
-
-        "question_led": """
-STYLE: Question Led
-
-Example:
-Do customers message your business every day?
-
-Do you answer the same questions repeatedly?
-
-Have you ever replied too late and lost a sale?
-
-An AI assistant can:
-✅ Reply instantly
-✅ Answer FAQs
-✅ Capture leads 24/7
-
-Imagine never missing a customer message again.
-""",
-
-        "before_after": """
-STYLE: Before vs After
-
-Example:
-
-BEFORE
-❌ Messages pile up
-❌ Customers wait hours
-❌ Sales are missed
-
-AFTER
-✅ Instant replies
-✅ Customers served 24/7
-✅ More leads captured
-
-All powered by an AI messaging assistant.
-""",
+        "before_after": """STYLE: Before / After
+Show two clear states with emoji dividers (❌ Before / ✅ After).
+Keep each side to 3-4 bullet points. Add 1 bridging line + CTA.""",
     }
+    return examples.get(style, examples["problem_agitate"])
 
-    return styles.get(style, styles["hook_checklist"])
 
+# ── System prompt builder ─────────────────────────────────────────────────────
 
-def build_instructions(
+def build_system_prompt(
     platform: str,
     brand_id: str,
-    target_month: Optional[str] = None,
-    posts_per_week: Optional[int] = None,
-    client_now_utc_iso: Optional[str] = None,
-    timezone: str = "Europe/London",
-    posting_hour_local: int = 9,
-    force_style: Optional[str] = None,
+    schedule_slots: List[str],
+    style: str,
 ) -> str:
+    style_block = _get_style_example(style)
 
-    # Pick style — forced for testing, random for production
-    style = force_style or random.choice(AD_STYLES)
-    style_instructions = get_ad_style_instructions(style)
+    slots_block = "\n".join(f"  Slot {i+1}: {s}" for i, s in enumerate(schedule_slots))
 
-    base = f"""
-You are a professional copywriter creating commercial advertisements for {platform}. use "neuroflow AI" to differenciate from other neuroflow names.
-Write in SIMPLE, CLEAR ENGLISH that anyone can understand — like explaining to a smart student.
+    return f"""You are a senior social-media copywriter creating a single paid advertisement for {platform}.
+Always refer to the product as "NeuroFlow AI" to distinguish from other Neuroflow brands.
 
-🚨 CRITICAL FORMATTING RULES - READ FIRST:
-❌ ABSOLUTELY NO Markdown syntax (no **, no *, no _, no #, no backticks, no ~~)
-❌ NO asterisks for bold or italics emphasis
-❌ NO special formatting characters for styling
-✅ Use PLAIN TEXT ONLY with emojis and line breaks
-✅ Use emojis for visual emphasis instead of bold
-✅ Use UPPERCASE for emphasis if needed (use sparingly)
-✅ Bullet points use * at the START of lines only (for actual bullet lists, not emphasis)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FORMATTING — NON-NEGOTIABLE RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ PLAIN TEXT ONLY — no Markdown of any kind
+✅ Emojis encouraged for visual emphasis
+✅ UPPERCASE for emphasis (use sparingly)
+✅ Bullet lines start with * (literal asterisk for lists only)
+✅ Blank lines between sections for readability
+
+❌ NO ** bold, NO * italic, NO _ underline, NO # headers, NO ` code, NO ~~ strike
 
 WRONG: "🚀 **Introducing** the Future!"
 RIGHT: "🚀 Introducing the Future!"
 
-WRONG: "This is *amazing* technology"
-RIGHT: "This is amazing technology" or "This is AMAZING technology"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AD STYLE TO FOLLOW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{style_block}
 
-CRITICAL: Generate TWO outputs:
-1. Individual fields (hook, subheading, bullets, proof, cta) - SHORT versions for structured data (all plain text)
-2. full_caption field - COMPLETE formatted ad using the narrative style below (all plain text)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WRITING RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+* Simple clear English — explain like to a smart student
+* Short sentences, active voice
+* Specific numbers when possible ("Save 5 hours daily" not "Save time")
+* Conversational but professional
+* full_caption: 250-400 words, 15-30 lines, ready to copy-paste
 
-{style_instructions}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SCHEDULE SLOTS — PICK EXACTLY ONE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+These are the only valid timestamps. Copy one exactly into scheduled_at:
+{slots_block}
 
-UNIVERSAL RULES (apply to ALL narrative styles):
-- Write in a warm, direct, human voice — never robotic or corporate
-- Use plain text only — no markdown bold (**), no headers with #
-- Emojis are allowed and encouraged where specified
-- Keep paragraphs short — maximum 3 sentences each
-- The caption must feel like it was written by a human marketer, not a template
-- End with a strong, specific CTA relevant to the product
-- Total length: 250-400 words
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMAGE PROMPT RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Write a realistic marketing photo description (30-40 words):
+* Must visually represent the topic
+* Include the product/service being advertised
+* Realistic people when appropriate; UI screens when relevant
+* Clean modern background, portrait 4:5, no text in image
 
-FORMATTING RULES FOR full_caption:
-- Use PLAIN TEXT only — absolutely NO Markdown formatting whatsoever
-- NO ** for bold, NO * for italics, NO _ for underline, NO # for headers
-- Use proper line breaks between sections for readability
-- Include ALL emojis (🚀, ✅, 💼, 🔹, 📈, 📲, 🌍, etc.) for visual appeal
-- Use bullet points with * at line start for lists (literal asterisks for bullets, NOT markdown)
-- For emphasis, use emojis or UPPERCASE words (sparingly, not every sentence)
-- Keep it readable and well-spaced with blank lines between sections
-- Total length: 15-30 lines of text
-- Make it ready to copy-paste directly into social media
-
-LANGUAGE STYLE:
-✅ Simple, clear English — easy to understand
-✅ Short, clear sentences — avoid complexity
-✅ Active voice: "You get X" not "X is provided"
-✅ Specific numbers when possible: "Save 5 hours daily" not "Save time"
-✅ Conversational but professional — like a friendly expert
-✅ Enthusiastic and helpful tone — make people excited to act
-
-AVOID:
-❌ Markdown formatting of any kind (**, *, _, #, `, ~~)
-❌ Complex jargon or technical terms
-❌ Long, complicated sentences
-❌ Passive voice
-❌ Vague claims without specifics
-❌ Corporate buzzwords
+GOOD: "Professional woman holding phone showing WhatsApp chatbot conversation, clean blue background, modern marketing style, portrait 4:5"
+BAD: "Colorful abstract shapes and dynamic elements with vibrant textures"
 """.strip()
 
-    now_line = (
-        f'- client_now_utc = "{client_now_utc_iso}" (THIS IS THE CURRENT TIME; do not schedule before this). '
-        f'Schedule must be at least +2 hours after client_now_utc.'
-        if client_now_utc_iso
-        else "- client_now_utc is unknown; schedule in the future"
-    )
 
-    if target_month and posts_per_week:
-        scheduling = f"""
-SCHEDULING RULES:
-- timezone_local = "{timezone}"
-{now_line}
-- target_month = "{target_month}" (YYYY-MM)
-- posts_per_week = {posts_per_week}
-- Prefer weekdays (Mon-Fri) and spread evenly across the month.
-- Default posting time is {posting_hour_local:02d}:00 local time; convert to UTC and output scheduled_at ending with Z.
-""".strip()
-    else:
-        scheduling = f"""
-SCHEDULING RULES:
-- timezone_local = "{timezone}"
-{now_line}
-- Choose the next valid weekday at {posting_hour_local:02d}:00 local time.
-- Convert to UTC and output scheduled_at ending with Z.
-""".strip()
-
-    image_prompt_rules = f"""
-IMAGE PROMPT RULES (CRITICAL - READ CAREFULLY):
-
-YOU MUST GENERATE EXTREMELY BACKGROUNDS:
-
-MANDATORY REQUIREMENTS:
-1. ONLY 1-2 solid colors (use brand colors if provided, otherwise: green, blue, yellow, orange, purple, red)
-2. MAXIMUM 1 object OR zero objects (strongly prefer zero objects)
-3. If including 1 object: must be geometric shape ONLY (circle, rounded square, leaf shape, abstract curve)
-4. NO complex illustrations, NO multiple objects, NO 3D renders, NO detailed textures, NO patterns
-5. Portrait orientation 4:5 (1080x1350)
-6. 80%+ of canvas should be EMPTY solid color for text placement
-7. Keep prompt under 15 words maximum
-
-GOOD EXAMPLES (copy this exact style):
-✅ "Professional marketing advertisement photo for AI WhatsApp chatbot.
-
-Main subject:
-Business owner holding smartphone showing WhatsApp chatbot conversation.
-
-Scene:
-Clean blue gradient background,
-modern office lighting,
-minimal environment.
-
-Composition:
-Phone centered,
-person slightly to side,
-clean empty space for text.
-
-Style:
-Ultra realistic photography,
-agency advertisement,
-soft shadows,
-premium lighting.
-
-Portrait 4:5 composition.
-No text."
-
-BAD EXAMPLES (NEVER generate like this):
-❌ "Business team in a modern office analyzing AI data on tablets and screens, bright lighting, clean professional setting, portrait 4:5".
-❌ "Colorful 3D shapes, multiple objects, complex composition..."
-❌ "Vibrant abstract design with many elements and textures..."
-❌ "Playful arrangement of geometric shapes scattered across..."
-❌ "Dynamic colorful background with various elements..."
-❌ Any prompt with words: multiple, various, collection, arrangement, scattered, dynamic, playful, complex, detailed, realistic texture, 3D, rendered
-
-SIMPLICITY CHECKLIST — YOUR PROMPT MUST PASS ALL:
-- Colors: 1 or 2 only? ✓
-- Objects: 0 or 1 shape? ✓
-- Empty space: 80%+ for text? ✓
-- Portrait 4:5 ratio? ✓
-- Under 15 words? ✓
-- No complex descriptors? ✓
-
-FINAL OUTPUT: One very short sentence (10-15 words maximum) describing the colored background.
-Example format: "Solid [color] background, [optional: one shape location], flat design, portrait 4:5"
-""".strip()
-
-    return "\n\n".join([base, scheduling, image_prompt_rules]).strip()
-
+# ── Main generation function ──────────────────────────────────────────────────
 
 def generate_post(
     topic_text: str,
     platform: str,
     brand_id: str,
-    brand_profile_summary=None,
-    brand_profile_json=None,
-    target_month: str | None = None,
-    posts_per_week: int | None = None,
-    client_now_utc_iso: str | None = None,
+    brand_profile_summary: Optional[str] = None,
+    brand_profile_json: Optional[Dict[str, Any]] = None,
+    target_month: Optional[str] = None,
+    posts_per_week: Optional[int] = None,
+    client_now_utc_iso: Optional[str] = None,
     timezone: str = "Europe/London",
     posting_hour_local: int = 9,
+    post_index: int = 0,         # which slot to assign (0-based)
+    total_posts: int = 1,        # total posts being generated this batch
+    assigned_slot: Optional[str] = None,  # pre-computed UTC slot from scheduler; overrides model choice
 ) -> Dict[str, Any]:
 
     brand_ctx = _brand_context_block(brand_id, brand_profile_summary, brand_profile_json)
+    style     = random.choice(AD_STYLES)
 
-    instructions = build_instructions(
+    # If the scheduler pre-computed a slot for this post, use it directly.
+    # Otherwise fall back to computing slots here (standalone usage).
+    if assigned_slot:
+        slots = [assigned_slot] * total_posts   # give model ONE option → it must use it
+        post_index = 0                           # always Slot 1 in the list
+    else:
+        slots = _compute_schedule_slots(
+            target_month=target_month or "",
+            posts_per_week=posts_per_week or 3,
+            client_now_utc_iso=client_now_utc_iso,
+            timezone=timezone,
+            posting_hour_local=posting_hour_local,
+            n_posts=total_posts,
+        )
+
+    system_prompt = build_system_prompt(
         platform=platform,
         brand_id=brand_id,
-        target_month=target_month,
-        posts_per_week=posts_per_week,
-        client_now_utc_iso=client_now_utc_iso,
-        timezone=timezone,
-        posting_hour_local=posting_hour_local,
+        schedule_slots=slots,
+        style=style,
     )
 
-    user_input = f"""
+    user_message = f"""{brand_ctx}
 
-{brand_ctx}
-
-
-TOPIC:
-
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TOPIC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {topic_text}
 
+PLATFORM: {platform}
 
-PLATFORM:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YOUR TASK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Write the full_caption following the AD STYLE above — plain text, emojis, line breaks.
+2. Fill the short structured fields (hook, subheading, bullets, proof, cta) — all plain text.
+3. Pick scheduled_at from the SCHEDULE SLOTS list — use Slot {post_index + 1} preferably, or any available slot.
+4. Write a realistic image_prompt (30-40 words, portrait 4:5, no text in image).
 
-{platform}
+CRITICAL: NO markdown formatting anywhere. PLAIN TEXT ONLY.""".strip()
 
+    print(f"[ai_generator] Generating post {post_index+1}/{total_posts} | platform={platform} | style={style}")
+    print(f"[ai_generator] System prompt length: {len(system_prompt)} chars")
 
-Generate:
-
-1. A complete formatted advertisement in the 'full_caption' field following ALL 10 steps with emojis and proper formatting - USE PLAIN TEXT ONLY, NO MARKDOWN
-
-2. Individual short fields (hook, subheading, bullets, proof, cta) for structured data - ALL PLAIN TEXT, NO MARKDOWN
-
-3. A PROFESSIONAL marketing image_prompt describing a realistic advertisement scene based on the topic.
-
-
-
-IMAGE PROMPT RULES:
-
-- The image MUST visually represent the TOPIC
-- Include the PRODUCT or SERVICE being advertised
-- Include realistic people when appropriate
-- Include UI screens when relevant (chatbot, dashboard, app)
-- Should look like a professional agency advertisement
-- Clean modern background
-- Realistic lighting
-- Portrait 4:5 composition
-- Maximum 40 words
-
-
-
-GOOD EXAMPLES:
-
-Chatbot:
-"Professional woman holding phone showing WhatsApp chatbot conversation, clean blue background, modern marketing style, portrait 4:5"
-
-Furniture:
-"Luxury sofa in modern living room, natural light, clean interior design, premium photography, portrait 4:5"
-
-Voice AI:
-"Business owner talking on smartphone, call interface visible, modern office background, marketing style, portrait 4:5"
-
-
-
-CRITICAL REMINDERS:
-
-- NO ** or * or _ or # formatting
-
-- Full caption should be long with emojis and line breaks
-
-- Image must clearly show the topic visually
-
-- Avoid abstract backgrounds only
-
-""".strip()
-
-    resp = client.responses.parse(
+    # ── Correct API call: beta.chat.completions.parse with system+user messages ──
+    resp = client.beta.chat.completions.parse(
         model=MODEL,
-        instructions=instructions,
-        input=user_input,
-        text_format=PostOutput,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_message},
+        ],
+        response_format=PostOutput,
+        temperature=0.8,
     )
 
-    data: PostOutput = resp.output_parsed
+    data: PostOutput = resp.choices[0].message.parsed
 
-    # Strip any Markdown formatting that might have slipped through
-    full_caption_cleaned = strip_markdown(data.full_caption or "")
-    hook_cleaned = strip_markdown(data.hook or "")
-    subheading_cleaned = strip_markdown(data.subheading or "")
-    proof_cleaned = strip_markdown(data.proof or "")
-    cta_cleaned = strip_markdown(data.cta or "")
+    if data is None:
+        # Surface the refusal reason if model refused
+        refusal = resp.choices[0].message.refusal
+        raise ValueError(f"Model refused to generate: {refusal}")
 
-    # Normalize bullets / hashtags
-    bullets = [strip_markdown(str(x).strip()) for x in (data.bullets or []) if str(x).strip()][:3]
+    print(f"[ai_generator] Generated OK | scheduled_at={data.scheduled_at} | caption_len={len(data.full_caption or '')}")
+
+    # Clean any markdown that slipped through
+    full_caption  = strip_markdown(data.full_caption or "").strip()
+    hook          = strip_markdown(data.hook or "").strip()
+    subheading    = strip_markdown(data.subheading or "").strip()
+    proof         = strip_markdown(data.proof or "").strip()
+    cta           = strip_markdown(data.cta or "").strip()
+    bullets       = [strip_markdown(str(b).strip()) for b in (data.bullets or []) if str(b).strip()][:3]
     while len(bullets) < 3:
         bullets.append("")
 
-    hashtags_list = [str(x).strip() for x in (data.hashtags or []) if str(x).strip()]
-    hashtags = " ".join(hashtags_list).strip()
+    hashtags_list = [str(h).strip() for h in (data.hashtags or []) if str(h).strip()]
+    hashtags      = " ".join(hashtags_list).strip()
+
+    # Always override with Python-computed slot — model never does scheduling
+    assigned_slot = assigned_slot or slots[min(post_index, len(slots) - 1)]
 
     structured = {
-        "hook": hook_cleaned.strip(),
-        "subheading": subheading_cleaned.strip(),
-        "bullets": bullets,
-        "proof": proof_cleaned.strip(),
-        "cta": cta_cleaned.strip(),
-        "hashtags": hashtags_list,
-        "scheduled_at": data.scheduled_at,
-        "image_prompt": data.image_prompt,
-        "video_concept": data.video_concept,
-        "thumbnail_prompt": data.thumbnail_prompt,
-        "media_prompt": data.media_prompt,
+        "hook":            hook,
+        "subheading":      subheading,
+        "bullets":         bullets,
+        "proof":           proof,
+        "cta":             cta,
+        "hashtags":        hashtags_list,
+        "scheduled_at":    assigned_slot,
+        "image_prompt":    data.image_prompt,
+        "video_concept":   data.video_concept,
     }
 
     return {
-        "body_text": full_caption_cleaned.strip(),  # Use the complete cleaned caption
-        "hashtags": hashtags,
-        "scheduled_at": data.scheduled_at,
-        "media_prompt": data.media_prompt,
-        "structured": structured,
+        "body_text":    full_caption,
+        "hashtags":     hashtags,
+        "scheduled_at": assigned_slot,   # authoritative — Python-computed
+        "structured":   structured,
     }
