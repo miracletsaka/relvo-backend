@@ -4,7 +4,8 @@ import json
 import re
 import math
 import random
-from datetime import datetime, timezone, timedelta
+import calendar
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -69,74 +70,66 @@ CTA style: {json.dumps(cta_style, ensure_ascii=False) if cta_style else "(not pr
 Colors: {", ".join(map(str, colors)) if colors else "(not provided)"}""".strip()
 
 
-# ── Pre-compute the schedule slots so the model just picks from a list ────────
-# This is the KEY fix — instead of asking GPT to do timezone math
-# (which it gets wrong), we compute exact UTC timestamps in Python
-# and hand it a numbered list to assign one slot per post.
-
 def _compute_schedule_slots(
     target_month: str,
     posts_per_week: int,
     client_now_utc_iso: Optional[str],
-    timezone: str,
+    tz_name: str,                        # renamed from 'timezone' to avoid shadowing builtin
     posting_hour_local: int,
     n_posts: int,
 ) -> List[str]:
     """
-    Returns a list of ISO-8601 UTC timestamps (ending in Z), one per post,
-    spread evenly across target_month on weekdays at posting_hour_local.
-    Skips any dates that are in the past relative to client_now_utc_iso.
+    Fallback slot computation used only when assigned_slot is not provided
+    (i.e. standalone usage outside the monthly generator).
     """
     try:
-        tz = ZoneInfo(timezone)
+        tz = ZoneInfo(tz_name)
     except (ZoneInfoNotFoundError, Exception):
         tz = ZoneInfo("Europe/London")
 
-    # Parse target month
     try:
         year, month = int(target_month[:4]), int(target_month[5:7])
     except Exception:
         now = datetime.now(tz)
         year, month = now.year, now.month
 
-    # Current time floor
+    # ── Fix: never use the string param as datetime.timezone ─────────────────
     if client_now_utc_iso:
         try:
             now_utc = datetime.fromisoformat(client_now_utc_iso.replace("Z", "+00:00"))
+            if now_utc.tzinfo is None:
+                now_utc = now_utc.replace(tzinfo=ZoneInfo("UTC"))
         except Exception:
-            now_utc = datetime.now(timezone.utc)
+            now_utc = datetime.now(ZoneInfo("UTC"))
     else:
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(ZoneInfo("UTC"))
 
-    # Build all weekday slots for the month
-    import calendar
     days_in_month = calendar.monthrange(year, month)[1]
     all_slots: List[datetime] = []
+
     for day in range(1, days_in_month + 1):
         local_dt = datetime(year, month, day, posting_hour_local, 0, 0, tzinfo=tz)
         utc_dt   = local_dt.astimezone(ZoneInfo("UTC"))
-        # Skip weekends (Mon=0 … Fri=4)
         if local_dt.weekday() > 4:
             continue
-        # Skip past dates (must be at least 2h in the future)
         if utc_dt <= now_utc + timedelta(hours=2):
             continue
         all_slots.append(utc_dt)
 
     if not all_slots:
-        # Fallback: next n_posts weekdays from now
         cursor = now_utc + timedelta(hours=3)
         while len(all_slots) < n_posts:
             local_c = cursor.astimezone(tz)
             if local_c.weekday() <= 4:
-                slot = datetime(local_c.year, local_c.month, local_c.day, posting_hour_local, 0, 0, tzinfo=tz)
+                slot = datetime(
+                    local_c.year, local_c.month, local_c.day,
+                    posting_hour_local, 0, 0, tzinfo=tz
+                )
                 all_slots.append(slot.astimezone(ZoneInfo("UTC")))
             cursor += timedelta(days=1)
 
-    # Spread n_posts evenly across available slots
     if len(all_slots) <= n_posts:
         chosen = all_slots[:n_posts]
-        # If still not enough, repeat last slot
         while len(chosen) < n_posts:
             chosen.append(chosen[-1] + timedelta(days=7))
     else:
@@ -203,8 +196,6 @@ Keep each side to 3-4 bullet points. Add 1 bridging line + CTA.""",
     return examples.get(style, examples["problem_agitate"])
 
 
-# ── System prompt builder ─────────────────────────────────────────────────────
-
 def build_system_prompt(
     platform: str,
     brand_id: str,
@@ -212,7 +203,6 @@ def build_system_prompt(
     style: str,
 ) -> str:
     style_block = _get_style_example(style)
-
     slots_block = "\n".join(f"  Slot {i+1}: {s}" for i, s in enumerate(schedule_slots))
 
     return f"""You are a senior social-media copywriter creating a single paid advertisement for {platform}.
@@ -277,27 +267,28 @@ def generate_post(
     target_month: Optional[str] = None,
     posts_per_week: Optional[int] = None,
     client_now_utc_iso: Optional[str] = None,
-    timezone: str = "Europe/London",
+    timezone: str = "Europe/London",     # kept for API compatibility
     posting_hour_local: int = 9,
-    post_index: int = 0,         # which slot to assign (0-based)
-    total_posts: int = 1,        # total posts being generated this batch
-    assigned_slot: Optional[str] = None,  # pre-computed UTC slot from scheduler; overrides model choice
+    post_index: int = 0,
+    total_posts: int = 1,
+    assigned_slot: Optional[str] = None,
 ) -> Dict[str, Any]:
 
     brand_ctx = _brand_context_block(brand_id, brand_profile_summary, brand_profile_json)
     style     = random.choice(AD_STYLES)
 
-    # If the scheduler pre-computed a slot for this post, use it directly.
-    # Otherwise fall back to computing slots here (standalone usage).
+    # If the monthly scheduler pre-computed a slot, give the model exactly
+    # one option so it has no choice but to use it.
+    # Otherwise compute slots here (standalone / legacy usage).
     if assigned_slot:
-        slots = [assigned_slot] * total_posts   # give model ONE option → it must use it
-        post_index = 0                           # always Slot 1 in the list
+        slots      = [assigned_slot]
+        post_index = 0
     else:
         slots = _compute_schedule_slots(
             target_month=target_month or "",
             posts_per_week=posts_per_week or 3,
             client_now_utc_iso=client_now_utc_iso,
-            timezone=timezone,
+            tz_name=timezone,            # pass as tz_name to avoid builtin shadow
             posting_hour_local=posting_hour_local,
             n_posts=total_posts,
         )
@@ -323,7 +314,7 @@ YOUR TASK
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. Write the full_caption following the AD STYLE above — plain text, emojis, line breaks.
 2. Fill the short structured fields (hook, subheading, bullets, proof, cta) — all plain text.
-3. Pick scheduled_at from the SCHEDULE SLOTS list — use Slot {post_index + 1} preferably, or any available slot.
+3. Pick scheduled_at from the SCHEDULE SLOTS list — use Slot {post_index + 1}.
 4. Write a realistic image_prompt (30-40 words, portrait 4:5, no text in image).
 
 CRITICAL: NO markdown formatting anywhere. PLAIN TEXT ONLY.""".strip()
@@ -331,7 +322,6 @@ CRITICAL: NO markdown formatting anywhere. PLAIN TEXT ONLY.""".strip()
     print(f"[ai_generator] Generating post {post_index+1}/{total_posts} | platform={platform} | style={style}")
     print(f"[ai_generator] System prompt length: {len(system_prompt)} chars")
 
-    # ── Correct API call: beta.chat.completions.parse with system+user messages ──
     resp = client.beta.chat.completions.parse(
         model=MODEL,
         messages=[
@@ -345,43 +335,41 @@ CRITICAL: NO markdown formatting anywhere. PLAIN TEXT ONLY.""".strip()
     data: PostOutput = resp.choices[0].message.parsed
 
     if data is None:
-        # Surface the refusal reason if model refused
         refusal = resp.choices[0].message.refusal
         raise ValueError(f"Model refused to generate: {refusal}")
 
     print(f"[ai_generator] Generated OK | scheduled_at={data.scheduled_at} | caption_len={len(data.full_caption or '')}")
 
-    # Clean any markdown that slipped through
-    full_caption  = strip_markdown(data.full_caption or "").strip()
-    hook          = strip_markdown(data.hook or "").strip()
-    subheading    = strip_markdown(data.subheading or "").strip()
-    proof         = strip_markdown(data.proof or "").strip()
-    cta           = strip_markdown(data.cta or "").strip()
-    bullets       = [strip_markdown(str(b).strip()) for b in (data.bullets or []) if str(b).strip()][:3]
+    full_caption = strip_markdown(data.full_caption or "").strip()
+    hook         = strip_markdown(data.hook or "").strip()
+    subheading   = strip_markdown(data.subheading or "").strip()
+    proof        = strip_markdown(data.proof or "").strip()
+    cta          = strip_markdown(data.cta or "").strip()
+    bullets      = [strip_markdown(str(b).strip()) for b in (data.bullets or []) if str(b).strip()][:3]
     while len(bullets) < 3:
         bullets.append("")
 
     hashtags_list = [str(h).strip() for h in (data.hashtags or []) if str(h).strip()]
     hashtags      = " ".join(hashtags_list).strip()
 
-    # Always override with Python-computed slot — model never does scheduling
-    assigned_slot = assigned_slot or slots[min(post_index, len(slots) - 1)]
+    # Python always owns the final scheduled_at — never trust the model
+    final_slot = assigned_slot or slots[min(post_index, len(slots) - 1)]
 
     structured = {
-        "hook":            hook,
-        "subheading":      subheading,
-        "bullets":         bullets,
-        "proof":           proof,
-        "cta":             cta,
-        "hashtags":        hashtags_list,
-        "scheduled_at":    assigned_slot,
-        "image_prompt":    data.image_prompt,
-        "video_concept":   data.video_concept,
+        "hook":          hook,
+        "subheading":    subheading,
+        "bullets":       bullets,
+        "proof":         proof,
+        "cta":           cta,
+        "hashtags":      hashtags_list,
+        "scheduled_at":  final_slot,
+        "image_prompt":  data.image_prompt,
+        "video_concept": data.video_concept,
     }
 
     return {
         "body_text":    full_caption,
         "hashtags":     hashtags,
-        "scheduled_at": assigned_slot,   # authoritative — Python-computed
+        "scheduled_at": final_slot,
         "structured":   structured,
     }

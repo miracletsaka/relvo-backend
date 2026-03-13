@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from fastapi import Query
+from app.models.brand import Brand
 from app.database import get_db
 from app.models.topic_chat import TopicChat
 from app.models.content_draft import ContentDraft
@@ -58,12 +59,12 @@ def create_topic_chat_and_generate(
     brand_profile_summary: str | None = None
     brand_profile_json:    dict | None = None
     try:
-        brand = db.execute(
-            select(brand).where(brand.id == payload.brand_id)
+        brandData = db.execute(
+            select(Brand).where(Brand.id == payload.brand_id)
         ).scalars().first()
-        if brand:
-            brand_profile_summary = getattr(brand, "profile_summary", None)
-            brand_profile_json    = getattr(brand, "profile_json",    None)
+        if brandData:
+            brand_profile_summary = getattr(brandData, "profile_summary", None)
+            brand_profile_json    = getattr(brandData, "profile_json",    None)
     except Exception as e:
         print(f"[topic_chats] Brand load warning (non-fatal): {e}")
  
