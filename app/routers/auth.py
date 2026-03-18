@@ -261,3 +261,36 @@ def change_password(payload: ChangePasswordIn, req: Request, db: Session = Depen
     db.commit()
     return {"ok": True}
 
+@router.delete("/users/{user_id}", status_code=204)
+def delete_user(user_id: str, req: Request, db: DbSession = Depends(get_db)):
+    """
+    Delete a user and all their sessions, verification tokens, and reset tokens.
+    Requires an active session (must be logged in).
+    Prevents self-deletion.
+    """
+    # Verify caller is authenticated
+    raw = req.cookies.get(COOKIE_NAME)
+    if not raw:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+ 
+    sh = hash_session_token(raw)
+    sess = db.query(Session).filter(Session.session_token == sh, Session.revoked_at.is_(None)).first()
+    if not sess or sess.expires_at < utcnow():
+        raise HTTPException(status_code=401, detail="Session expired")
+ 
+    # Prevent self-deletion
+    if str(sess.user_id) == str(user_id):
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+ 
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+ 
+    # Cascade manually (no FK cascade defined on these tables typically)
+    db.query(Session).filter(Session.user_id == user_id).delete()
+    db.query(EmailVerificationToken).filter(EmailVerificationToken.user_id == user_id).delete()
+    db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user_id).delete()
+ 
+    db.delete(user)
+    db.commit()
+
