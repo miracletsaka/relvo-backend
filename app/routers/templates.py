@@ -188,6 +188,7 @@ def get_template(template_id: str, db: Session = Depends(get_db)):
 @router.delete("/{template_id}")
 def delete_template(template_id: str, db: Session = Depends(get_db)):
     """Delete a template"""
+    print("id to delete:", template_id)
     tpl = db.query(Template).filter(Template.id == template_id).first()
     if not tpl:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -195,7 +196,7 @@ def delete_template(template_id: str, db: Session = Depends(get_db)):
     db.delete(tpl)
     db.commit()
     
-    return {"ok": True, "id": template_id}
+    return {"ok": True, "deleted": True, "id": template_id}
 
 
 # ✅ SYNTHESIZE AND SAVE

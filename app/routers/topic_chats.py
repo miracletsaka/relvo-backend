@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy import delete
 from fastapi import Query
 from app.models.brand import Brand
 from app.database import get_db
@@ -268,3 +269,26 @@ def update_topic_chat_backgrounds(
         "count": len(merged),
         "background_images": merged,
     }
+
+@router.delete("/{topic_chat_id}")
+def delete_topic_chat(topic_chat_id: str, db: Session = Depends(get_db)):
+    import uuid
+    try:
+        parsed_id = uuid.UUID(topic_chat_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid topic_chat_id format")
+
+    chat = db.execute(
+        select(TopicChat).where(TopicChat.id == parsed_id)
+    ).scalars().first()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Topic chat not found")
+
+    # Delete all drafts first (cascade if not set on DB level)
+    db.execute(
+        delete(ContentDraft).where(ContentDraft.topic_chat_id == parsed_id)
+    )
+    db.delete(chat)
+    db.commit()
+
+    return {"ok": True, "id": topic_chat_id}
