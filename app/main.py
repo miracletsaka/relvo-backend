@@ -64,7 +64,7 @@ app.include_router(topic_chats.router)
 app.include_router(drafts.router)
 app.include_router(content_drafts.router)
 app.include_router(templates.router)
-app.include_router(media_assets_backend.router, prefix="/media-assets", tags=["media-assets"])
+app.include_router(media_assets_backend.router)
 # Health check
 @app.get("/")
 def health_check():

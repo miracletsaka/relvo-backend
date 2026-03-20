@@ -12,14 +12,15 @@ import uuid as _uuid
 import random
 from datetime import datetime, timezone
 from typing import List, Optional
+
 from app.models.media_asset import MediaAsset
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import Column, String, Integer, DateTime, JSON, ForeignKey, select
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.database import Base, get_db
+from app.database import get_db
+
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
@@ -50,6 +51,19 @@ class MediaAssetOut(BaseModel):
             updated_at=obj.updated_at.isoformat(),
         )
 
+    @classmethod
+    def from_row(cls, row: dict) -> "MediaAssetOut":
+        """Build from a raw SQL row dict (used when ORM cast would fail)."""
+        return cls(
+            id=str(row["id"]), url=row["url"], filename=row["filename"], type=row["type"],
+            brand_id=str(row["brand_id"]) if row.get("brand_id") else None,
+            brand_name=row.get("brand_name"), tags=row.get("tags") or [],
+            size_bytes=row.get("size_bytes"), mime_type=row.get("mime_type"),
+            width=row.get("width"), height=row.get("height"),
+            created_at=row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
+            updated_at=row["updated_at"].isoformat() if hasattr(row["updated_at"], "isoformat") else str(row["updated_at"]),
+        )
+
 
 class CreateMediaAssetPayload(BaseModel):
     url:        str
@@ -70,14 +84,10 @@ class UpdateMediaAssetPayload(BaseModel):
     tags:       Optional[List[str]] = None
 
 
-# ── Router ────────────────────────────────────────────────────────────────────
-# redirect_slashes=False: accepts both /media-assets and /media-assets/
-# without issuing a 307 that can silently convert POST→GET.
-# Route paths use "" (not "/") so FastAPI doesn't register a second
-# conflicting route at the prefix root.
+router = APIRouter(prefix="/media-assets", tags=["media-assets"])
 
-router = APIRouter(redirect_slashes=False)
 
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=List[MediaAssetOut])
 def list_media_assets(
@@ -85,50 +95,119 @@ def list_media_assets(
     brand_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    q = select(MediaAsset).order_by(MediaAsset.created_at.desc())
-    if type:     q = q.where(MediaAsset.type == type)
-    if brand_id: q = q.where(MediaAsset.brand_id == brand_id)
-    return [MediaAssetOut.from_orm(r) for r in db.execute(q).scalars().all()]
+    # Use raw SQL so brand_id is compared as text — avoids UUID cast errors
+    # when brand_id column is UUID type but values are string slugs.
+    where_clauses = []
+    params: dict = {}
+    if type:
+        where_clauses.append("type = :type")
+        params["type"] = type
+    if brand_id:
+        where_clauses.append("brand_id::text = :brand_id")
+        params["brand_id"] = brand_id
+
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    rows = db.execute(
+        text(f"SELECT * FROM media_assets {where_sql} ORDER BY created_at DESC"),
+        params,
+    ).mappings().all()
+    return [MediaAssetOut.from_row(dict(r)) for r in rows]
 
 
 @router.post("", response_model=MediaAssetOut, status_code=201)
 def create_media_asset(payload: CreateMediaAssetPayload, db: Session = Depends(get_db)):
-    now = datetime.now(timezone.utc)
-    asset = MediaAsset(
-        id=_uuid.uuid4(), url=payload.url, filename=payload.filename, type=payload.type,
-        brand_id=payload.brand_id or None,
-        brand_name=payload.brand_name, tags=payload.tags,
-        size_bytes=payload.size_bytes, mime_type=payload.mime_type,
-        width=payload.width, height=payload.height,
-        created_at=now, updated_at=now,
-    )
-    db.add(asset); db.commit(); db.refresh(asset)
-    return MediaAssetOut.from_orm(asset)
+    """
+    INSERT using raw SQL so brand_id is stored as plain text rather than
+    being cast to UUID by SQLAlchemy. The DB column is UUID but brand IDs
+    are string slugs (e.g. 'neuroflow-software') — the cast fails at the
+    ORM layer. Inserting brand_id as text bypasses this.
+    """
+    now       = datetime.now(timezone.utc)
+    asset_id  = _uuid.uuid4()
+    import json
+
+    # Serialize tags to JSON string in Python — avoids :param::json syntax
+    # which conflicts with psycopg2's %(name)s parameter style
+    tags_json = json.dumps(payload.tags or [])
+
+    db.execute(text("""
+        INSERT INTO media_assets
+            (id, url, filename, type, brand_id, brand_name, tags,
+             size_bytes, mime_type, width, height, created_at, updated_at)
+        VALUES
+            (:id, :url, :filename, :type, :brand_id, :brand_name, CAST(:tags AS json),
+             :size_bytes, :mime_type, :width, :height, :created_at, :updated_at)
+    """), {
+        "id":         str(asset_id),
+        "url":        payload.url,
+        "filename":   payload.filename,
+        "type":       payload.type,
+        "brand_id":   payload.brand_id or None,
+        "brand_name": payload.brand_name,
+        "tags":       tags_json,
+        "size_bytes": payload.size_bytes,
+        "mime_type":  payload.mime_type,
+        "width":      payload.width,
+        "height":     payload.height,
+        "created_at": now,
+        "updated_at": now,
+    })
+    db.commit()
+
+    # Fetch back the row we just inserted using text() to avoid UUID cast
+    row = db.execute(
+        text("SELECT * FROM media_assets WHERE id = :id"),
+        {"id": str(asset_id)},
+    ).mappings().first()
+
+    if not row:
+        raise HTTPException(500, "Asset was inserted but could not be retrieved")
+
+    return MediaAssetOut.from_row(dict(row))
 
 
 @router.patch("/{asset_id}", response_model=MediaAssetOut)
 def update_media_asset(asset_id: str, payload: UpdateMediaAssetPayload, db: Session = Depends(get_db)):
-    asset = db.execute(
-        select(MediaAsset).where(MediaAsset.id == _uuid.UUID(asset_id))
-    ).scalars().first()
-    if not asset: raise HTTPException(404, "Asset not found")
+    import json
+    set_clauses = ["updated_at = :updated_at"]
+    params: dict = {"asset_id": asset_id, "updated_at": datetime.now(timezone.utc)}
+
     if payload.brand_id is not None:
-        asset.brand_id   = payload.brand_id or None
-        asset.brand_name = payload.brand_name
+        set_clauses.append("brand_id = :brand_id")
+        set_clauses.append("brand_name = :brand_name")
+        params["brand_id"]   = payload.brand_id or None
+        params["brand_name"] = payload.brand_name
+
     if payload.tags is not None:
-        asset.tags = payload.tags
-    asset.updated_at = datetime.now(timezone.utc)
-    db.commit(); db.refresh(asset)
-    return MediaAssetOut.from_orm(asset)
+        set_clauses.append("tags = CAST(:tags AS json)")
+        params["tags"] = json.dumps(payload.tags)
+
+    db.execute(
+        text(f"UPDATE media_assets SET {', '.join(set_clauses)} WHERE id::text = :asset_id"),
+        params,
+    )
+    db.commit()
+
+    row = db.execute(
+        text("SELECT * FROM media_assets WHERE id::text = :asset_id"),
+        {"asset_id": asset_id},
+    ).mappings().first()
+
+    if not row:
+        raise HTTPException(404, "Asset not found")
+
+    return MediaAssetOut.from_row(dict(row))
 
 
 @router.delete("/{asset_id}", status_code=204)
 def delete_media_asset(asset_id: str, db: Session = Depends(get_db)):
-    asset = db.execute(
-        select(MediaAsset).where(MediaAsset.id == _uuid.UUID(asset_id))
-    ).scalars().first()
-    if not asset: raise HTTPException(404, "Asset not found")
-    db.delete(asset); db.commit()
+    result = db.execute(
+        text("DELETE FROM media_assets WHERE id::text = :asset_id"),
+        {"asset_id": asset_id},
+    )
+    db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(404, "Asset not found")
 
 
 # ── Helper used by other services ────────────────────────────────────────────
@@ -139,16 +218,23 @@ def get_assets_for_brand(
     asset_type: str = "video",
     portrait_only: bool = True,
     limit: int = 20,
-) -> list[MediaAsset]:
-    """Fetch assets for a brand. Used by generate_monthly_drafts and Studio."""
-    assets = list(db.execute(
-        select(MediaAsset)
-        .where(MediaAsset.brand_id == brand_id)
-        .where(MediaAsset.type == asset_type)
-    ).scalars().all())
+) -> list:
+    """Fetch assets for a brand. Uses text comparison to avoid UUID cast errors."""
+    rows = db.execute(
+        text("""
+            SELECT * FROM media_assets
+            WHERE brand_id::text = :brand_id
+              AND type = :type
+        """),
+        {"brand_id": brand_id, "type": asset_type},
+    ).mappings().all()
+
+    assets = [dict(r) for r in rows]
+
     if portrait_only and assets:
-        portrait = [a for a in assets if a.height and a.width and a.height > a.width]
+        portrait = [a for a in assets if a.get("height") and a.get("width") and a["height"] > a["width"]]
         if portrait:
             assets = portrait
+
     random.shuffle(assets)
     return assets[:limit]
