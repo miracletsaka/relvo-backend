@@ -1,13 +1,14 @@
 from datetime import datetime, timezone
 import uuid
+import threading
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy import select
 from sqlalchemy import delete
 from fastapi import Query
 from app.models.brand import Brand
-from app.database import get_db
+from app.database import get_db, engine   # make sure engine is exported from app.database
 from app.models.topic_chat import TopicChat
 from app.models.content_draft import ContentDraft
 from app.services.monthly_generator import generate_monthly_drafts
@@ -35,28 +36,89 @@ class TopicChatCreateRequest(TopicChatPreviewRequest):
     timezone: str | None = "Europe/London"
     posting_hour_local: int | None = 9
 
+
+# ── Background generation thread ──────────────────────────────────────────────
+# Runs independently after POST returns. Uses its own DB session so it never
+# touches the request session which is already closed by then.
+
+def _run_generation_in_background(
+    chat_id:              uuid.UUID,
+    brand_id:             str,
+    topic:                str,
+    target_month:         str,
+    posts_per_week:       int,
+    brand_profile_summary: str | None,
+    brand_profile_json:   dict | None,
+    client_now:           str | None,
+    tz:                   str,
+    posting_hour_local:   int,
+) -> None:
+    SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    db: Session = SessionLocal()
+    try:
+        res = generate_monthly_drafts(
+            db=db,
+            topic_chat_id=chat_id,
+            brand_id=brand_id,
+            topic=topic,
+            target_month=target_month,
+            posts_per_week=posts_per_week,
+            brand_profile_summary=brand_profile_summary,
+            brand_profile_json=brand_profile_json,
+            client_now=client_now,
+            timezone=tz,
+            posting_hour_local=posting_hour_local,
+        )
+        print(f"[topic_chats] Background generation done: {res}")
+
+        # Mark as done
+        chat = db.execute(select(TopicChat).where(TopicChat.id == chat_id)).scalars().first()
+        if chat:
+            chat.generation_status = "done"
+            chat.generation_result = res
+            chat.updated_at        = datetime.now(timezone.utc)
+            db.commit()
+
+    except Exception as e:
+        print(f"[topic_chats] Background generation FAILED: {e}")
+        try:
+            chat = db.execute(select(TopicChat).where(TopicChat.id == chat_id)).scalars().first()
+            if chat:
+                chat.generation_status = "failed"
+                chat.generation_error  = str(e)[:500]
+                chat.updated_at        = datetime.now(timezone.utc)
+                db.commit()
+        except Exception as inner:
+            print(f"[topic_chats] Could not save error status: {inner}")
+    finally:
+        db.close()
+
+
+# ── POST /topic-chats — returns instantly ─────────────────────────────────────
+
 @router.post("")
 def create_topic_chat_and_generate(
     payload: TopicChatCreateRequest,
     db: Session = Depends(get_db),
 ):
-    # 1) Create the TopicChat row immediately so the client gets an ID
+    # 1) Create the TopicChat row immediately — client gets ID in < 1s
     chat_id = uuid.uuid4()
     now     = datetime.now(timezone.utc)
- 
+
     chat = TopicChat(
         id=chat_id,
         brand_id=payload.brand_id,
         topic=payload.topic,
         target_month=payload.target_month,
         posts_per_week=payload.posts_per_week,
+        generation_status="processing",
         created_at=now,
         updated_at=now,
     )
     db.add(chat)
-    db.commit()   # commit BEFORE generation so ID is visible for polling
- 
-    # 2) Load brand profile for richer AI context
+    db.commit()   # commit before spawning thread so row is visible immediately
+
+    # 2) Load brand profile (fast — one DB read)
     brand_profile_summary: str | None = None
     brand_profile_json:    dict | None = None
     try:
@@ -68,33 +130,75 @@ def create_topic_chat_and_generate(
             brand_profile_json    = getattr(brandData, "profile_json",    None)
     except Exception as e:
         print(f"[topic_chats] Brand load warning (non-fatal): {e}")
- 
-    # 3) Generate drafts (may take 30-120 s depending on platform count)
-    try:
-        res = generate_monthly_drafts(
-            db=db,
-            topic_chat_id=chat_id,
-            brand_id=payload.brand_id,
-            topic=payload.topic,
-            target_month=payload.target_month,
-            posts_per_week=payload.posts_per_week,
-            brand_profile_summary=brand_profile_summary,
-            brand_profile_json=brand_profile_json,
-            client_now=payload.client_now,
-            timezone=payload.timezone or "Europe/London",
-            posting_hour_local=payload.posting_hour_local or 9,
-        )
-    except Exception as e:
-        # Don't delete the chat — client can still poll drafts
-        print(f"[topic_chats] Generation error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
- 
-    print(f"[topic_chats] Done: {res}")
- 
+
+    # 3) Fire generation in background daemon thread — do NOT await
+    thread = threading.Thread(
+        target=_run_generation_in_background,
+        args=(
+            chat_id, payload.brand_id, payload.topic,
+            payload.target_month, payload.posts_per_week,
+            brand_profile_summary, brand_profile_json,
+            payload.client_now,
+            payload.timezone or "Europe/London",
+            payload.posting_hour_local or 9,
+        ),
+        daemon=True,
+    )
+    thread.start()
+
+    # Return immediately — frontend polls /status
     return {
         "topic_chat_id": str(chat_id),
-        **res,
+        "status":        "processing",
     }
+
+
+# ── GET /topic-chats/{id}/status — polling endpoint ──────────────────────────
+
+@router.get("/{chat_id}/status")
+def get_topic_chat_status(chat_id: str, db: Session = Depends(get_db)):
+    """
+    Frontend polls this every 4s.
+    Returns:
+      { status: "processing", drafts_so_far: N }
+      { status: "done", generated: N, failed: N }
+      { status: "failed", error: "..." }
+    """
+    try:
+        cid = uuid.UUID(chat_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid chat id")
+
+    chat = db.execute(select(TopicChat).where(TopicChat.id == cid)).scalars().first()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Topic chat not found")
+
+    status = getattr(chat, "generation_status", None) or "done"
+
+    if status == "done":
+        result = getattr(chat, "generation_result", None) or {}
+        return {
+            "status":    "done",
+            "generated": result.get("generated", 0) if isinstance(result, dict) else 0,
+            "failed":    result.get("failed",    0) if isinstance(result, dict) else 0,
+        }
+    elif status == "failed":
+        return {
+            "status": "failed",
+            "error":  getattr(chat, "generation_error", "Unknown error"),
+        }
+    else:
+        # Count drafts written so far — gives frontend a live progress number
+        count = db.execute(
+            select(ContentDraft).where(ContentDraft.topic_chat_id == cid)
+        ).scalars().all()
+        return {
+            "status":        "processing",
+            "drafts_so_far": len(count),
+        }
+
+
+# ── All existing routes below — unchanged ────────────────────────────────────
 
 @router.get("/{chat_id}")
 def get_topic_chat(chat_id: str, db: Session = Depends(get_db)):
@@ -153,24 +257,16 @@ def list_chat_drafts(chat_id: str, db: Session = Depends(get_db)):
             "brand_id": d.brand_id,
             "platform": d.platform,
             "status": d.status,
-
-            # content
             "body_text": d.body_text,
             "hashtags": d.hashtags,
             "structured": d.structured,
-
-            # scheduling
             "scheduled_at": d.scheduled_at.isoformat() if d.scheduled_at else None,
-
-            # ✅ MEDIA (added)
             "media_type": d.media_type,
             "media_url": d.media_url,
             "media_urls": parse_media_urls(d.media_urls),
             "thumbnail_url": d.thumbnail_url,
             "media_provider": d.media_provider,
             "media_caption": d.media_caption,
-
-            # meta
             "last_error": d.last_error,
             "created_at": d.created_at.isoformat() if d.created_at else None,
             "updated_at": d.updated_at.isoformat() if d.updated_at else None,
@@ -180,7 +276,6 @@ def list_chat_drafts(chat_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{chat_id}/regenerate")
 def regenerate(chat_id: str, payload: dict, db: Session = Depends(get_db)):
-    # payload can include client_now/timezone/posting_hour_local + brand profile
     try:
         cid = uuid.UUID(chat_id)
     except Exception:
@@ -204,31 +299,6 @@ def regenerate(chat_id: str, payload: dict, db: Session = Depends(get_db)):
         posting_hour_local=payload.get("posting_hour_local") or 9,
     )
     return res
-
-
-# @router.get("")
-# def list_topic_chats(
-#     limit: int = Query(8, ge=1, le=50),
-#     db: Session = Depends(get_db),
-# ):
-#     rows = db.execute(
-#         select(TopicChat)
-#         .order_by(TopicChat.updated_at.desc().nulls_last(), TopicChat.created_at.desc().nulls_last())
-#         .limit(limit)
-#     ).scalars().all()
-
-#     return [
-#         {
-#             "id": str(c.id),
-#             "brand_id": c.brand_id,
-#             "topic": c.topic,
-#             "target_month": c.target_month,
-#             "posts_per_week": c.posts_per_week,
-#             "created_at": c.created_at.isoformat() if c.created_at else None,
-#             "updated_at": c.updated_at.isoformat() if c.updated_at else None,
-#         }
-#         for c in rows
-#     ]
 
 @router.get("")
 def list_topic_chats(limit: int = Query(50, ge=1, le=500), db: Session = Depends(get_db)):
@@ -254,12 +324,11 @@ def update_topic_chat_backgrounds(
     db: Session = Depends(get_db),
 ):
     chat = db.query(TopicChat).filter(TopicChat.id == topic_chat_id).first()
-
     if not chat:
         raise HTTPException(status_code=404, detail="Topic chat not found")
 
     existing = chat.background_images or []
-    merged = list(dict.fromkeys(existing + payload.background_images))  # dedupe
+    merged = list(dict.fromkeys(existing + payload.background_images))
 
     chat.background_images = merged
     db.commit()
@@ -272,7 +341,6 @@ def update_topic_chat_backgrounds(
 
 @router.delete("/{topic_chat_id}")
 def delete_topic_chat(topic_chat_id: str, db: Session = Depends(get_db)):
-    import uuid
     try:
         parsed_id = uuid.UUID(topic_chat_id)
     except ValueError:
@@ -284,10 +352,7 @@ def delete_topic_chat(topic_chat_id: str, db: Session = Depends(get_db)):
     if not chat:
         raise HTTPException(status_code=404, detail="Topic chat not found")
 
-    # Delete all drafts first (cascade if not set on DB level)
-    db.execute(
-        delete(ContentDraft).where(ContentDraft.topic_chat_id == parsed_id)
-    )
+    db.execute(delete(ContentDraft).where(ContentDraft.topic_chat_id == parsed_id))
     db.delete(chat)
     db.commit()
 

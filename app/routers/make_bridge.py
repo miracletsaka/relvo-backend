@@ -42,7 +42,7 @@ def _coerce_hashtag_list(hashtags: Any) -> list[str]:
 
 
 def _random_link(draft_id: str) -> Optional[str]:
-    probability = float(os.getenv("LINK_PROBABILITY", "0.4"))
+    probability = float(os.getenv("LINK_PROBABILITY", "1.0"))
     if random.random() > probability:
         return None
     base = os.getenv("PUBLIC_SITE_BASE_URL", "https://neuroflowai.co.uk")
