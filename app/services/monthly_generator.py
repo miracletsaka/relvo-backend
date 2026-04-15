@@ -1,3 +1,6 @@
+"""
+app/services/generate_monthly_drafts.py
+"""
 from __future__ import annotations
 
 import uuid
@@ -14,9 +17,15 @@ from app.models.platform import Platform
 from app.models.topic_chat import TopicChat
 from app.models.content_draft import ContentDraft
 from app.services.ai_generator import generate_post
+from app.services.org_data_loader import load_org_context
 
 
 def _build_platform_day_offsets(platforms: list) -> dict[str, int]:
+    """
+    Each platform gets a different weekday starting offset (0, 1, 2, 3...).
+    Sorted alphabetically so order is deterministic.
+    facebook=0 (Mon), instagram=1 (Tue), linkedin=2 (Wed), youtube=3 (Thu)
+    """
     sorted_ids = sorted(p.id for p in platforms)
     return {pid: i for i, pid in enumerate(sorted_ids)}
 
@@ -30,8 +39,10 @@ def _remaining_weeks_in_month(
     now_local    = now_utc.astimezone(tz)
     days_in_m    = calendar.monthrange(year, month)[1]
     end_of_month = datetime(year, month, days_in_m, 23, 59, 59, tzinfo=tz)
+
     if now_local > end_of_month:
         return 0.0
+
     today_local    = now_local.date()
     end_date       = end_of_month.date()
     remaining_days = (end_date - today_local).days + 1
@@ -48,21 +59,28 @@ def _compute_slots_for_platform(
     n_posts: int,
     platform_offsets: dict[str, int],
 ) -> list[str]:
+    """
+    Returns exactly n_posts ISO-8601 UTC timestamps for one platform.
+    Each platform starts from a different weekday (day offset) so posts
+    never all land on the same day.
+    """
     day_offset = platform_offsets.get(platform_id.lower(), 0)
     days_in_m  = calendar.monthrange(year, month)[1]
     min_future = now_utc + timedelta(minutes=30)
 
+    # Build all available weekday slots for this month
     available: list[datetime] = []
     for day in range(1, days_in_m + 1):
         local_dt = datetime(year, month, day, posting_hour_local, 0, 0, tzinfo=tz)
         utc_dt   = local_dt.astimezone(ZoneInfo("UTC"))
-        if local_dt.weekday() > 4:
+        if local_dt.weekday() > 4:    # skip Sat/Sun
             continue
-        if utc_dt <= min_future:
+        if utc_dt <= min_future:      # skip past/near-future
             continue
         available.append(utc_dt)
 
     if not available:
+        # Fallback: next n_posts weekdays from now
         cursor = now_utc + timedelta(hours=1)
         while len(available) < n_posts:
             local_c = cursor.astimezone(tz)
@@ -74,15 +92,18 @@ def _compute_slots_for_platform(
                 available.append(slot.astimezone(ZoneInfo("UTC")))
             cursor += timedelta(days=1)
 
-    # Rotate start day per platform so they don't all land on the same day
+    # Apply day offset — rotate the list so each platform starts
+    # on a different weekday. offset=0 → starts Mon, offset=1 → starts Tue, etc.
     if day_offset > 0 and len(available) > day_offset:
         available = available[day_offset:] + available[:day_offset]
 
+    # Spread n_posts evenly across available slots
     if len(available) >= n_posts:
         step   = len(available) / n_posts
         chosen = [available[int(i * step)] for i in range(n_posts)]
     else:
         chosen = list(available)
+        # Extend into next month if needed
         cursor_date = datetime(year, month, days_in_m, tzinfo=tz) + timedelta(days=1)
         while len(chosen) < n_posts:
             local_dt = datetime(
@@ -114,24 +135,29 @@ def generate_monthly_drafts(
     *,
     db: Session,
     topic_chat_id: uuid.UUID,
+    org_id: uuid.UUID,
     brand_id: str,
+    tone_id: str | None = None,
     topic: str,
     target_month: str,
     posts_per_week: int,
     brand_profile_summary: str | None = None,
     brand_profile_json: dict | None = None,
+    tone_name: str | None = None,
+    tone_label: str | None = None,
+    tone_description: str | None = None,
     client_now: str | None = None,
     timezone: str = "Europe/London",
     posting_hour_local: int = 9,
 ) -> dict:
 
-    # 1) Resolve timezone
+    # ── 1) Resolve timezone ───────────────────────────────────────────────────
     try:
         tz = ZoneInfo(timezone)
     except (ZoneInfoNotFoundError, Exception):
         tz = ZoneInfo("Europe/London")
 
-    # 2) Parse target month
+    # ── 2) Parse target month ─────────────────────────────────────────────────
     try:
         year  = int(target_month[:4])
         month = int(target_month[5:7])
@@ -139,7 +165,7 @@ def generate_monthly_drafts(
         now_local = datetime.now(tz)
         year, month = now_local.year, now_local.month
 
-    # 3) Resolve now
+    # ── 3) Resolve "now" ──────────────────────────────────────────────────────
     if client_now:
         try:
             now_utc = datetime.fromisoformat(client_now.replace("Z", "+00:00"))
@@ -150,21 +176,42 @@ def generate_monthly_drafts(
     else:
         now_utc = datetime.now(ZoneInfo("UTC"))
 
-    # 4) Load active platforms
+    # ── 4) Load active platforms ──────────────────────────────────────────────
+        # ── 4) Load active platforms ──────────────────────────────────────────────
     platforms = db.execute(
-        select(Platform).where(Platform.is_active == True)
+        select(Platform).where(
+            Platform.is_active == True,
+            Platform.org_id == org_id,
+        )
     ).scalars().all()
 
+    # If org has no active platforms, ensure a default Facebook platform exists
     if not platforms:
-        return {
-            "created": 0, "generated": 0, "failed": 0,
-            "note": "No active platforms configured.",
-        }
+        facebook = db.execute(
+            select(Platform).where(
+                Platform.id == "facebook",
+                Platform.org_id == org_id,
+            )
+        ).scalar_one_or_none()
+
+        if not facebook:
+            facebook = Platform(
+                id="facebook",
+                display_name="Facebook",
+                is_active=True,
+                org_id=org_id,
+                created_at=datetime.now(),
+            )
+            db.add(facebook)
+            db.commit()
+            db.refresh(facebook)
+
+        platforms = [facebook]
 
     platform_offsets = _build_platform_day_offsets(platforms)
     print(f"[generate_monthly_drafts] Platform day offsets: {platform_offsets}")
 
-    # 5) Verify topic chat exists
+    # ── 5) Verify topic chat exists ───────────────────────────────────────────
     chat = db.execute(
         select(TopicChat).where(TopicChat.id == topic_chat_id)
     ).scalars().first()
@@ -177,7 +224,7 @@ def generate_monthly_drafts(
     total_failed    = 0
     platform_summary: list[dict] = []
 
-    # 6) Per-platform generation
+    # ── 6) Per-platform generation ────────────────────────────────────────────
     for platform in platforms:
         plat_id = platform.id
 
@@ -205,6 +252,11 @@ def generate_monthly_drafts(
         plat_generated = 0
         plat_failed    = 0
 
+            # ── 4.1) Load real org context once ─────────────────────────────────────
+        org_ctx = load_org_context(db, org_id)
+        org_context_block = org_ctx.to_ai_context_block()
+        org_structured_patch = org_ctx.to_structured_patch()
+
         for i, slot in enumerate(slots):
             print(f"  [{plat_id}] Post {i+1}/{n_posts} → slot {slot}")
             try:
@@ -221,24 +273,38 @@ def generate_monthly_drafts(
                     posting_hour_local=posting_hour_local,
                     post_index=i,
                     total_posts=n_posts,
-                    assigned_slot=slot,   # ← Python owns scheduling, not the model
+                    assigned_slot=slot,
+                    tone_name=tone_name,
+                    tone_label=tone_label,
+                    tone_description=tone_description,
+                    tone_prompt_instruction=tone_description,
+                    org_context_block=org_context_block,
+                    org_structured_patch=org_structured_patch,
                 )
 
-                caption  = (result.get("body_text") or "").strip() or None
-                h        = result.get("hashtags") or ""
-                hashtags = " ".join(str(x).strip() for x in h if str(x).strip()).strip() or None \
-                           if isinstance(h, list) else str(h).strip() or None
+                caption = (result.get("body_text") or "").strip() or None
+
+                h = result.get("hashtags") or ""
+                if isinstance(h, list):
+                    hashtags = " ".join(str(x).strip() for x in h if str(x).strip()).strip() or None
+                else:
+                    hashtags = str(h).strip() or None
+
                 structured   = result.get("structured") or {}
                 scheduled_at = None
                 try:
-                    scheduled_at = datetime.fromisoformat(slot.replace("Z", "+00:00"))
+                    scheduled_at = datetime.fromisoformat(
+                        slot.replace("Z", "+00:00")
+                    )
                 except Exception:
                     pass
 
-                db.add(ContentDraft(
+                draft = ContentDraft(
                     id=uuid.uuid4(),
+                    org_id=org_id,
                     topic_chat_id=topic_chat_id,
                     brand_id=brand_id,
+                    tone_id=tone_id,
                     platform=plat_id,
                     status="PENDING_APPROVAL",
                     body_text=caption,
@@ -248,7 +314,8 @@ def generate_monthly_drafts(
                     last_error=None,
                     created_at=db_now,
                     updated_at=db_now,
-                ))
+                )
+                db.add(draft)
                 plat_generated += 1
 
             except Exception as e:
@@ -257,8 +324,10 @@ def generate_monthly_drafts(
                 print(traceback.format_exc())
                 db.add(ContentDraft(
                     id=uuid.uuid4(),
+                    org_id=org_id,
                     topic_chat_id=topic_chat_id,
                     brand_id=brand_id,
+                    tone_id=tone_id,
                     platform=plat_id,
                     status="FAILED",
                     last_error=str(e),
@@ -272,6 +341,7 @@ def generate_monthly_drafts(
         total_created   += n_posts
         total_generated += plat_generated
         total_failed    += plat_failed
+
         platform_summary.append({
             "platform":  plat_id,
             "posts":     n_posts,

@@ -7,13 +7,19 @@ from app.models.user import User
 from app.services.sessions import COOKIE_NAME, hash_session_token
 from app.services.tokens import utcnow
 
-def get_current_user(req: Request, db: DbSession):
+def get_current_user(
+    req: Request,
+    db: DbSession = Depends(get_db),  # ← add this
+) -> User:
     raw = req.cookies.get(COOKIE_NAME)
     if not raw:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     sh = hash_session_token(raw)
-    sess = db.query(Session).filter(Session.session_token == sh, Session.revoked_at == None).first()
+    sess = db.query(Session).filter(
+        Session.session_token == sh,
+        Session.revoked_at == None
+    ).first()
     if not sess or sess.expires_at < utcnow():
         raise HTTPException(status_code=401, detail="Session expired")
 
@@ -22,8 +28,10 @@ def get_current_user(req: Request, db: DbSession):
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
-def require_admin(req: Request, db: DbSession = Depends(get_db)):
-    user = get_current_user(req, db)
+
+def require_admin(
+    user: User = Depends(get_current_user),  # ← chain instead of calling manually
+) -> User:
     if getattr(user, "role", "member") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     return user

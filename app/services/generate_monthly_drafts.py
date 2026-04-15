@@ -134,12 +134,17 @@ def generate_monthly_drafts(
     *,
     db: Session,
     topic_chat_id: uuid.UUID,
+    org_id: uuid.UUID,
     brand_id: str,
+    tone_id: str | None = None,
     topic: str,
     target_month: str,
     posts_per_week: int,
     brand_profile_summary: str | None = None,
     brand_profile_json: dict | None = None,
+    tone_name: str | None = None,
+    tone_label: str | None = None,
+    tone_description: str | None = None,
     client_now: str | None = None,
     timezone: str = "Europe/London",
     posting_hour_local: int = 9,
@@ -170,15 +175,18 @@ def generate_monthly_drafts(
     else:
         now_utc = datetime.now(ZoneInfo("UTC"))
 
-    # ── 4) Load active platforms ──────────────────────────────────────────────
+        # ── 4) Load active platforms ──────────────────────────────────────────────
     platforms = db.execute(
-        select(Platform).where(Platform.is_active == True)
+        select(Platform).where(
+            Platform.is_active == True,
+            Platform.org_id == org_id,
+        )
     ).scalars().all()
 
     if not platforms:
         return {
             "created": 0, "generated": 0, "failed": 0,
-            "note": "No active platforms configured.",
+            "note": "No active platforms configured for this organisation.",
         }
 
     platform_offsets = _build_platform_day_offsets(platforms)
@@ -242,6 +250,9 @@ def generate_monthly_drafts(
                     post_index=i,
                     total_posts=n_posts,
                     assigned_slot=slot,
+                    tone_name=tone_name,
+                    tone_label=tone_label,
+                    tone_description=tone_description,
                 )
 
                 caption = (result.get("body_text") or "").strip() or None
@@ -265,6 +276,7 @@ def generate_monthly_drafts(
                     id=uuid.uuid4(),
                     topic_chat_id=topic_chat_id,
                     brand_id=brand_id,
+                    tone_id=tone_id,
                     platform=plat_id,
                     status="PENDING_APPROVAL",
                     body_text=caption,
@@ -286,6 +298,7 @@ def generate_monthly_drafts(
                     id=uuid.uuid4(),
                     topic_chat_id=topic_chat_id,
                     brand_id=brand_id,
+                    tone_id=tone_id,
                     platform=plat_id,
                     status="FAILED",
                     last_error=str(e),

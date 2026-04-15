@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.content_item import ContentItem
-from backend.app.services.formatters.platform_text import build_structured_text
+from app.services.formatters.platform_text import build_structured_text
 
 router = APIRouter(prefix="/make", tags=["make"])
 

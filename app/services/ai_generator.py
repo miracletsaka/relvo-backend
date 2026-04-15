@@ -2,7 +2,6 @@
 import os
 import json
 import re
-import math
 import random
 import calendar
 from datetime import datetime, timedelta
@@ -36,7 +35,7 @@ def strip_markdown(text: str) -> str:
     text = re.sub(r'^#{1,6}\s+',    '',    text, flags=re.MULTILINE)
     text = re.sub(r'~~(.*?)~~',     r'\1', text)
     text = text.replace('`', '')
-    return text
+    return text.strip()
 
 
 def _brand_context_block(
@@ -70,18 +69,84 @@ CTA style: {json.dumps(cta_style, ensure_ascii=False) if cta_style else "(not pr
 Colors: {", ".join(map(str, colors)) if colors else "(not provided)"}""".strip()
 
 
+def _tone_instruction(
+    tone_name: Optional[str] = None,
+    tone_label: Optional[str] = None,
+    tone_description: Optional[str] = None,
+    tone_prompt_instruction: Optional[str] = None,
+) -> str:
+    """
+    Build tone context block.
+    Priority:
+      1. tone_prompt_instruction from DB (authoritative — set by admin)
+      2. Built-in rules by tone_name slug (fallback)
+      3. tone_description freetext (last resort)
+    """
+    name = (tone_name or "").strip().lower()
+
+    builtin_rules = {
+        "inform": "Write in a clear, helpful, factual style. Prioritize clarity over hype. Teach or explain something useful. CTA should feel soft and appropriate, not aggressive.",
+        "advertise": "Write persuasively and commercially. Lead with benefit, urgency, or positioning. CTA should be strong and action-oriented. Focus on conversion.",
+        "alert": "Write with urgency and importance. Shorter sentences. Get to the point quickly. Highlight the consequence or key action clearly.",
+        "vacancy": "Write like a high-quality recruitment post. Make the role and opportunity clear. Keep it credible, direct, and professional. CTA should be about applying or learning more.",
+        "announce": "Write like a professional announcement. Clear, confident, and official. Suitable for launches, updates, milestones, or news.",
+        "educate": "Write to simplify something important. Make the content easy to understand. Focus on value and learning. CTA can invite the reader to learn more.",
+        "inspire": "Write with energy and aspiration. Make the reader feel possibility, momentum, or ambition. Keep it authentic, not cheesy.",
+        "testimonial": "Write with trust and proof. Lean into outcomes, real experience, or customer perspective. Make credibility the core of the message.",
+        "promote": "Write to spotlight an offer, product, service, or opportunity. Highlight what makes it attractive. CTA should be clear and commercial.",
+        "behind-the-scenes": "Write in a more human, natural, authentic voice. Show process, effort, people, or story behind the work.",
+        "entertain": "Write in a playful, engaging, attention-grabbing way. Still keep it brand-safe and readable.",
+        "question": "Write to spark conversation. Lead with a compelling question. Invite the audience to think and respond.",
+    }
+
+    # Use DB instruction if provided (highest priority)
+    instruction = (tone_prompt_instruction or "").strip()
+
+    # Fall back to built-in by slug
+    if not instruction:
+        instruction = builtin_rules.get(name, "")
+
+    # Fall back to description
+    if not instruction and tone_description:
+        instruction = f"Follow this tone style: {tone_description}"
+
+    if not instruction:
+        instruction = "(No tone rule. Write naturally for the platform and topic.)"
+
+    return f"""TONE CONTEXT:
+Tone name: {tone_name or "(not set)"}
+Tone label: {tone_label or "(not set)"}
+Tone description: {tone_description or "(not set)"}
+
+TONE INSTRUCTION:
+{instruction}""".strip()
+
+
+def _platform_context_block(platform: str) -> str:
+    p = (platform or "").strip().lower()
+
+    rules = {
+        "linkedin": "Professional and polished. Useful for business, credibility, education, and authority. Avoid slang-heavy copy.",
+        "facebook": "Readable, broad-audience friendly, engaging. Can be slightly more direct and practical. Good for local businesses, service offers, and community-oriented messaging.",
+        "instagram": "Visual-first, punchy, clean, engaging. Shorter lines work well. Should feel strong in a graphic and still support a caption.",
+        "twitter": "Concise and attention-grabbing. Front-load the strongest point. Keep phrasing tight.",
+        "tiktok": "Fast, punchy, scroll-stopping. Simple language. Strong hook is critical.",
+        "youtube": "Clear and compelling. Good for educational or authority-led messaging.",
+    }
+
+    return f"""PLATFORM CONTEXT:
+Platform: {platform}
+Guidance: {rules.get(p, "Write clearly for the platform and keep the format easy to consume.")}""".strip()
+
+
 def _compute_schedule_slots(
     target_month: str,
     posts_per_week: int,
     client_now_utc_iso: Optional[str],
-    tz_name: str,                        # renamed from 'timezone' to avoid shadowing builtin
+    tz_name: str,
     posting_hour_local: int,
     n_posts: int,
 ) -> List[str]:
-    """
-    Fallback slot computation used only when assigned_slot is not provided
-    (i.e. standalone usage outside the monthly generator).
-    """
     try:
         tz = ZoneInfo(tz_name)
     except (ZoneInfoNotFoundError, Exception):
@@ -93,7 +158,6 @@ def _compute_schedule_slots(
         now = datetime.now(tz)
         year, month = now.year, now.month
 
-    # ── Fix: never use the string param as datetime.timezone ─────────────────
     if client_now_utc_iso:
         try:
             now_utc = datetime.fromisoformat(client_now_utc_iso.replace("Z", "+00:00"))
@@ -140,119 +204,176 @@ def _compute_schedule_slots(
 
 
 # ── Structured output schema ──────────────────────────────────────────────────
-
+# NOTE: review_text, review_author, offer_title, offer_cta, business_* fields
+# are still present so the AI can write FALLBACK values when no real org data
+# exists. When org data IS available, these get overwritten by org_data_loader.
+# ─────────────────────────────────────────────────────────────────────────────
 class PostOutput(BaseModel):
-    hook:          str            = Field(..., description="Opening hook — 10 words max, plain text, no markdown")
-    subheading:    str            = Field(..., description="Product intro line — 14 words max, plain text")
-    bullets:       List[str]      = Field(..., min_length=3, max_length=3, description="Exactly 3 key benefits, plain text")
-    proof:         str            = Field(..., description="Social proof line — 9 words max, plain text")
-    cta:           str            = Field(..., description="Call to action — 10 words max, plain text")
-    full_caption:  str            = Field(..., description="Complete ad copy, 250-400 words, plain text with emojis and line breaks — NO markdown")
-    hashtags:      List[str]      = Field(default_factory=list, description="Array of hashtags like #Tag")
-    scheduled_at:  str            = Field(..., description="One ISO 8601 UTC timestamp from the provided SCHEDULE SLOTS list — copy exactly, ends with Z")
-    image_prompt:  Optional[str]  = Field(default=None, description="Realistic marketing photo prompt, 30-40 words, portrait 4:5")
-    video_concept: Optional[str]  = Field(default=None)
+    hook:          str
+    subheading:    str
+    bullets:       List[str]
+    proof:         str
+    cta:           str
+    full_caption:  str
+    hashtags:      List[str]
+    scheduled_at:  str
+    image_prompt:  Optional[str] = None
+    video_concept: Optional[str] = None
+
+    # Template layout helpers
+    hook_tag:    Optional[str] = ""
+    hook_pre:    Optional[str] = ""
+    hook_number: Optional[str] = ""
+    hook_label:  Optional[str] = ""
+    hook_desc:   Optional[str] = ""
+
+    bullet_1: Optional[str] = ""
+    bullet_2: Optional[str] = ""
+    bullet_3: Optional[str] = ""
+
+    price_label:  Optional[str] = ""
+    fine_print:   Optional[str] = ""
+    enroll_note:  Optional[str] = ""
+    badge_icon:   Optional[str] = ""
+    deco_icon:    Optional[str] = ""
+
+    # ── Fallback fields — AI writes these ONLY when no real org data exists ──
+    # These will be overwritten by org_data_loader when real data is present.
+    offer_title:  Optional[str] = ""
+    offer_cta:    Optional[str] = ""
+
+    review_text:   Optional[str] = ""
+    review_author: Optional[str] = ""
+
+    business_tagline:     Optional[str] = ""
+    business_description: Optional[str] = ""
+    business_type:        Optional[str] = ""
+    business_website:     Optional[str] = ""
 
 
-# ── Ad style library ──────────────────────────────────────────────────────────
-
-AD_STYLES = [
-    "story", "scenario", "problem_agitate",
-    "case_study", "controversial", "question_led", "before_after",
+CONTENT_ANGLES = [
+    "benefit_led",
+    "problem_solution",
+    "trust_led",
+    "educational",
+    "offer_led",
+    "authority_led",
+    "story_led",
 ]
 
-def _get_style_example(style: str) -> str:
+def _angle_example(angle: str) -> str:
     examples = {
-        "story": """STYLE: Personal Story
-Write as if a real customer is telling their transformation story.
-Open with a relatable struggle, show the turning point, end with the outcome.
-Use "I" or "they" voice. 3-4 short paragraphs + bullet results + CTA.""",
-
-        "scenario": """STYLE: Vivid Scenario
-Paint a specific moment the reader recognises (a time, a place, a frustration).
-Make them nod and say "that's me". Then present the solution as relief.
-Short punchy paragraphs, present tense, end with CTA.""",
-
-        "problem_agitate": """STYLE: Problem → Agitate → Solve
-Name the pain → twist the knife (make it feel worse) → reveal the solution.
-Use short sentences, escalating urgency, then flip to relief + CTA.""",
-
-        "case_study": """STYLE: Mini Case Study
-Before numbers → After numbers → Key features → CTA.
-Use real-feeling metrics (even approximate). Keep it tight: 4 sections.""",
-
-        "controversial": """STYLE: Contrarian Take
-Open with a bold claim that challenges conventional wisdom.
-Back it up with 2-3 punchy reasons. End with the smarter alternative + CTA.""",
-
-        "question_led": """STYLE: Question Led
-Open with 3 short questions the reader answers "yes" to.
-Build tension, then reveal the solution. Close with a direct CTA.""",
-
-        "before_after": """STYLE: Before / After
-Show two clear states with emoji dividers (❌ Before / ✅ After).
-Keep each side to 3-4 bullet points. Add 1 bridging line + CTA.""",
+        "benefit_led":       "ANGLE: Benefit Led\nLead with the biggest positive outcome. Make the result obvious fast. Then support with 2-3 concrete points and a CTA.",
+        "problem_solution":  "ANGLE: Problem → Solution\nOpen with a pain, frustration, or missed opportunity. Then present the solution clearly. Keep it direct and useful.",
+        "trust_led":         "ANGLE: Trust Led\nLead with proof, confidence, professionalism, or credibility. Use this when reassurance matters.",
+        "educational":       "ANGLE: Educational\nTeach or explain something useful. Structure the message so it feels valuable even before the CTA.",
+        "offer_led":         "ANGLE: Offer Led\nLead with the offer, deal, opportunity, or headline incentive. Useful for promotional or conversion content.",
+        "authority_led":     "ANGLE: Authority Led\nPosition the brand as capable, experienced, modern, or ahead of the curve. Useful for B2B, consulting, and expertise-driven messaging.",
+        "story_led":         "ANGLE: Story Led\nUse a narrative or human angle. Good for testimonial, behind-the-scenes, or transformation style content.",
     }
-    return examples.get(style, examples["problem_agitate"])
+    return examples.get(angle, examples["benefit_led"])
+
+
+def _pick_angle_from_tone(tone_name: Optional[str]) -> str:
+    name = (tone_name or "").strip().lower()
+    if name in {"inform", "educate"}:     return "educational"
+    if name in {"advertise", "promote"}:  return "offer_led"
+    if name == "alert":                   return "problem_solution"
+    if name == "testimonial":             return "trust_led"
+    if name in {"behind-the-scenes", "inspire"}: return "story_led"
+    if name in {"announce", "vacancy"}:   return "authority_led"
+    return random.choice(CONTENT_ANGLES)
 
 
 def build_system_prompt(
     platform: str,
     brand_id: str,
     schedule_slots: List[str],
-    style: str,
+    angle: str,
+    tone_name: Optional[str] = None,
+    tone_label: Optional[str] = None,
+    tone_description: Optional[str] = None,
+    tone_prompt_instruction: Optional[str] = None,
+    org_context_block: Optional[str] = None,
 ) -> str:
-    style_block = _get_style_example(style)
-    slots_block = "\n".join(f"  Slot {i+1}: {s}" for i, s in enumerate(schedule_slots))
+    angle_block    = _angle_example(angle)
+    slots_block    = "\n".join(f"  Slot {i+1}: {s}" for i, s in enumerate(schedule_slots))
+    tone_block     = _tone_instruction(tone_name, tone_label, tone_description, tone_prompt_instruction)
+    platform_block = _platform_context_block(platform)
 
-    return f"""You are a senior social-media copywriter creating a single paid advertisement for {platform}.
-Always refer to the product as "NeuroFlow AI" to distinguish from other Neuroflow brands.
+    # Inject real org data context if available
+    org_block = ""
+    if org_context_block:
+        org_block = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REAL ORG DATA (do not hallucinate — use this)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{org_context_block}
+
+IMPORTANT: The review_text, review_author, offer_title, offer_cta, business_tagline,
+business_description, business_type, and business_website fields will be OVERWRITTEN
+with real database values after generation. Focus your energy on writing excellent
+hook, subheading, bullets, proof, cta, and full_caption copy.
+""".strip()
+
+    return f"""You are a senior social-media copywriter creating a high-performing social post for {platform}.
+Always refer to the product or company accurately based on the provided brand context.
+Do not invent facts that are not supported by the topic or brand context.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FORMATTING — NON-NEGOTIABLE RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✅ PLAIN TEXT ONLY — no Markdown of any kind
-✅ Emojis encouraged for visual emphasis
-✅ UPPERCASE for emphasis (use sparingly)
-✅ Bullet lines start with * (literal asterisk for lists only)
-✅ Blank lines between sections for readability
+✅ Emojis allowed when appropriate
+✅ UPPERCASE allowed for emphasis, but use sparingly
+✅ Bullet lines in captions may start with * if useful
+✅ Keep text clean and copy-paste ready
 
 ❌ NO ** bold, NO * italic, NO _ underline, NO # headers, NO ` code, NO ~~ strike
 
-WRONG: "🚀 **Introducing** the Future!"
-RIGHT: "🚀 Introducing the Future!"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PLATFORM + TONE + ANGLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{platform_block}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-AD STYLE TO FOLLOW
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{style_block}
+{tone_block}
+
+{angle_block}
+
+{org_block}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 WRITING RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-* Simple clear English — explain like to a smart student
-* Short sentences, active voice
-* Specific numbers when possible ("Save 5 hours daily" not "Save time")
-* Conversational but professional
-* full_caption: 250-400 words, 15-30 lines, ready to copy-paste
+* Clear, modern, human writing
+* Use simple, strong English
+* Keep the structured fields concise and graphic-friendly
+* full_caption should feel natural for the selected tone and platform
+* Avoid sounding generic or robotic
+* Do not force hype when the tone is informational
+* Do not force educational copy when the tone is promotional
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STRUCTURED FIELD RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+hook:        short, strong, visually usable — 4-10 words
+subheading:  one supporting line — 6-16 words
+bullets:     exactly 3, each short and clean, no duplicate meaning
+proof:       short trust / proof / credibility line
+cta:         short and direct, matched to tone
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SCHEDULE SLOTS — PICK EXACTLY ONE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-These are the only valid timestamps. Copy one exactly into scheduled_at:
 {slots_block}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 IMAGE PROMPT RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Write a realistic marketing photo description (30-40 words):
-* Must visually represent the topic
-* Include the product/service being advertised
-* Realistic people when appropriate; UI screens when relevant
-* Clean modern background, portrait 4:5, no text in image
-
-GOOD: "Professional woman holding phone showing WhatsApp chatbot conversation, clean blue background, modern marketing style, portrait 4:5"
-BAD: "Colorful abstract shapes and dynamic elements with vibrant textures"
+Write a realistic marketing image prompt (30-40 words):
+* Must visually represent the topic and tone
+* Prefer real people / product / environment / device where appropriate
+* Clean modern composition, portrait 4:5, no text in image
 """.strip()
 
 
@@ -267,28 +388,32 @@ def generate_post(
     target_month: Optional[str] = None,
     posts_per_week: Optional[int] = None,
     client_now_utc_iso: Optional[str] = None,
-    timezone: str = "Europe/London",     # kept for API compatibility
+    timezone: str = "Europe/London",
     posting_hour_local: int = 9,
     post_index: int = 0,
     total_posts: int = 1,
     assigned_slot: Optional[str] = None,
+    tone_name: Optional[str] = None,
+    tone_label: Optional[str] = None,
+    tone_description: Optional[str] = None,
+    tone_prompt_instruction: Optional[str] = None,   # ← NEW: from DB tones table
+    org_context_block: Optional[str] = None,          # ← NEW: from org_data_loader
+    org_structured_patch: Optional[Dict[str, Any]] = None,  # ← NEW: real data to merge
 ) -> Dict[str, Any]:
 
     brand_ctx = _brand_context_block(brand_id, brand_profile_summary, brand_profile_json)
-    style     = random.choice(AD_STYLES)
+    tone_ctx  = _tone_instruction(tone_name, tone_label, tone_description, tone_prompt_instruction)
+    angle     = _pick_angle_from_tone(tone_name)
 
-    # If the monthly scheduler pre-computed a slot, give the model exactly
-    # one option so it has no choice but to use it.
-    # Otherwise compute slots here (standalone / legacy usage).
     if assigned_slot:
-        slots      = [assigned_slot]
+        slots = [assigned_slot]
         post_index = 0
     else:
         slots = _compute_schedule_slots(
             target_month=target_month or "",
             posts_per_week=posts_per_week or 3,
             client_now_utc_iso=client_now_utc_iso,
-            tz_name=timezone,            # pass as tz_name to avoid builtin shadow
+            tz_name=timezone,
             posting_hour_local=posting_hour_local,
             n_posts=total_posts,
         )
@@ -297,10 +422,17 @@ def generate_post(
         platform=platform,
         brand_id=brand_id,
         schedule_slots=slots,
-        style=style,
+        angle=angle,
+        tone_name=tone_name,
+        tone_label=tone_label,
+        tone_description=tone_description,
+        tone_prompt_instruction=tone_prompt_instruction,
+        org_context_block=org_context_block,
     )
 
     user_message = f"""{brand_ctx}
+
+{tone_ctx}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TOPIC
@@ -312,15 +444,27 @@ PLATFORM: {platform}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 YOUR TASK
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. Write the full_caption following the AD STYLE above — plain text, emojis, line breaks.
-2. Fill the short structured fields (hook, subheading, bullets, proof, cta) — all plain text.
-3. Pick scheduled_at from the SCHEDULE SLOTS list — use Slot {post_index + 1}.
-4. Write a realistic image_prompt (30-40 words, portrait 4:5, no text in image).
+Write one strong social post that matches:
+* the brand context
+* the selected tone
+* the platform
+* the required structured output
 
-CRITICAL: NO markdown formatting anywhere. PLAIN TEXT ONLY.""".strip()
+Requirements:
+1. Write full_caption in plain text with natural line breaks.
+2. Fill hook, subheading, bullets, proof, cta in plain text.
+3. Pick scheduled_at from the provided SCHEDULE SLOTS list — use Slot {post_index + 1}.
+4. Write a realistic image_prompt suited to the topic and tone.
+5. Keep the structured fields visually strong for graphic use.
 
-    print(f"[ai_generator] Generating post {post_index+1}/{total_posts} | platform={platform} | style={style}")
-    print(f"[ai_generator] System prompt length: {len(system_prompt)} chars")
+CRITICAL:
+* No markdown formatting anywhere
+* No fake specifics
+* No invented claims unless they are clearly framed generically
+* Make the writing feel intentional, not generic
+""".strip()
+
+    print(f"[ai_generator] Generating post {post_index+1}/{total_posts} | platform={platform} | angle={angle} | tone={tone_name}")
 
     resp = client.beta.chat.completions.parse(
         model=MODEL,
@@ -333,39 +477,85 @@ CRITICAL: NO markdown formatting anywhere. PLAIN TEXT ONLY.""".strip()
     )
 
     data: PostOutput = resp.choices[0].message.parsed
-
     if data is None:
-        refusal = resp.choices[0].message.refusal
-        raise ValueError(f"Model refused to generate: {refusal}")
+        raise ValueError(f"Model refused to generate: {resp.choices[0].message.refusal}")
 
-    print(f"[ai_generator] Generated OK | scheduled_at={data.scheduled_at} | caption_len={len(data.full_caption or '')}")
+    full_caption = strip_markdown(data.full_caption or "")
+    hook         = strip_markdown(data.hook or "")
+    subheading   = strip_markdown(data.subheading or "")
+    proof        = strip_markdown(data.proof or "")
+    cta          = strip_markdown(data.cta or "")
 
-    full_caption = strip_markdown(data.full_caption or "").strip()
-    hook         = strip_markdown(data.hook or "").strip()
-    subheading   = strip_markdown(data.subheading or "").strip()
-    proof        = strip_markdown(data.proof or "").strip()
-    cta          = strip_markdown(data.cta or "").strip()
-    bullets      = [strip_markdown(str(b).strip()) for b in (data.bullets or []) if str(b).strip()][:3]
+    bullets = [strip_markdown(str(b).strip()) for b in (data.bullets or []) if str(b).strip()][:3]
     while len(bullets) < 3:
         bullets.append("")
 
     hashtags_list = [str(h).strip() for h in (data.hashtags or []) if str(h).strip()]
     hashtags      = " ".join(hashtags_list).strip()
+    final_slot    = assigned_slot or slots[min(post_index, len(slots) - 1)]
 
-    # Python always owns the final scheduled_at — never trust the model
-    final_slot = assigned_slot or slots[min(post_index, len(slots) - 1)]
-
+    # ── Build structured output from AI ──────────────────────────────────────
     structured = {
-        "hook":          hook,
-        "subheading":    subheading,
-        "bullets":       bullets,
-        "proof":         proof,
-        "cta":           cta,
-        "hashtags":      hashtags_list,
-        "scheduled_at":  final_slot,
-        "image_prompt":  data.image_prompt,
-        "video_concept": data.video_concept,
+        # Core copy — always from AI
+        "hook":        hook,
+        "subheading":  subheading,
+        "bullets":     bullets,
+        "proof":       proof,
+        "cta":         cta,
+        "hashtags":    hashtags_list,
+        "scheduled_at": final_slot,
+        "image_prompt":  data.image_prompt or "",
+        "video_concept": data.video_concept or "",
+
+        # Template layout helpers — from AI
+        "hook_tag":    strip_markdown(data.hook_tag or ""),
+        "hook_pre":    strip_markdown(data.hook_pre or ""),
+        "hook_number": strip_markdown(data.hook_number or ""),
+        "hook_label":  strip_markdown(data.hook_label or ""),
+        "hook_desc":   strip_markdown(data.hook_desc or ""),
+
+        "bullet_1": strip_markdown(data.bullet_1 or bullets[0] if bullets else ""),
+        "bullet_2": strip_markdown(data.bullet_2 or bullets[1] if len(bullets) > 1 else ""),
+        "bullet_3": strip_markdown(data.bullet_3 or bullets[2] if len(bullets) > 2 else ""),
+
+        "price_label": strip_markdown(data.price_label or ""),
+        "fine_print":  strip_markdown(data.fine_print or ""),
+        "enroll_note": strip_markdown(data.enroll_note or ""),
+        "badge_icon":  strip_markdown(data.badge_icon or ""),
+        "deco_icon":   strip_markdown(data.deco_icon or ""),
+
+        # Tone metadata
+        "tone_name":  tone_name  or "",
+        "tone_label": tone_label or "",
+
+        # ── AI FALLBACK values (overwritten below if real org data exists) ──
+        "offer_title":  strip_markdown(data.offer_title or ""),
+        "offer_cta":    strip_markdown(data.offer_cta or ""),
+
+        "review_text":   strip_markdown(data.review_text or ""),
+        "review_author": strip_markdown(data.review_author or ""),
+
+        "business_tagline":     strip_markdown(data.business_tagline or ""),
+        "business_description": strip_markdown(data.business_description or ""),
+        "business_type":        strip_markdown(data.business_type or ""),
+        "business_website":     strip_markdown(data.business_website or ""),
+
+        # Arrays default to empty — overwritten by real data below
+        "sponsors":       [],
+        "accreditations": [],
+        "reviews":        [],
+        "offers":         [],
+        "metadata":       [],
+        "campaign_goals": [],
     }
+
+    # ── Merge real org data (overwrites AI fallbacks) ─────────────────────────
+    # This is the key step: real DB data always wins over AI-generated values.
+    if org_structured_patch:
+        structured.update(org_structured_patch)
+        print(f"[ai_generator] Merged real org data: {list(org_structured_patch.keys())}")
+
+    print(f"[ai_generator] Generated OK | scheduled_at={final_slot} | caption_len={len(full_caption)}")
 
     return {
         "body_text":    full_caption,

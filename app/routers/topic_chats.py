@@ -4,18 +4,22 @@ import threading
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy import select
-from sqlalchemy import delete
+from sqlalchemy import select, delete
 from fastapi import Query
 from app.models.brand import Brand
-from app.database import get_db, engine   # make sure engine is exported from app.database
+from app.database import get_db, engine
 from app.models.topic_chat import TopicChat
 from app.models.content_draft import ContentDraft
 from app.services.monthly_generator import generate_monthly_drafts
 from app.utils.scheduling import posts_in_month
+from app.dependencies.org import get_current_org
+from app.models.organisation import Organisation
 from typing import List
 
+from app.models.tone import Tone
+
 router = APIRouter(prefix="/topic-chats", tags=["topic-chats"])
+
 
 class TopicChatPreviewRequest(BaseModel):
     brand_id: str
@@ -26,32 +30,37 @@ class TopicChatPreviewRequest(BaseModel):
 class TopicChatBackgroundUpdate(BaseModel):
     background_images: List[str]
 
-@router.post("/preview")
-def preview_count(payload: TopicChatPreviewRequest):
-    n = posts_in_month(payload.target_month, payload.posts_per_week)
-    return {"will_generate": n}
-
 class TopicChatCreateRequest(TopicChatPreviewRequest):
+    tone_id: str | None = None
     client_now: str | None = None
     timezone: str | None = "Europe/London"
     posting_hour_local: int | None = 9
 
 
+@router.post("/preview")
+def preview_count(payload: TopicChatPreviewRequest):
+    n = posts_in_month(payload.target_month, payload.posts_per_week)
+    return {"will_generate": n}
+
+
 # ── Background generation thread ──────────────────────────────────────────────
-# Runs independently after POST returns. Uses its own DB session so it never
-# touches the request session which is already closed by then.
 
 def _run_generation_in_background(
-    chat_id:              uuid.UUID,
-    brand_id:             str,
-    topic:                str,
-    target_month:         str,
-    posts_per_week:       int,
+    chat_id: uuid.UUID,
+    org_id: uuid.UUID,
+    brand_id: str,
+    tone_id: str | None,
+    topic: str,
+    target_month: str,
+    posts_per_week: int,
     brand_profile_summary: str | None,
-    brand_profile_json:   dict | None,
-    client_now:           str | None,
-    tz:                   str,
-    posting_hour_local:   int,
+    brand_profile_json: dict | None,
+    tone_name: str | None,
+    tone_label: str | None,
+    tone_description: str | None,
+    client_now: str | None,
+    tz: str,
+    posting_hour_local: int,
 ) -> None:
     SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
     db: Session = SessionLocal()
@@ -59,19 +68,23 @@ def _run_generation_in_background(
         res = generate_monthly_drafts(
             db=db,
             topic_chat_id=chat_id,
+            org_id=org_id,
             brand_id=brand_id,
+            tone_id=tone_id,
             topic=topic,
             target_month=target_month,
             posts_per_week=posts_per_week,
             brand_profile_summary=brand_profile_summary,
             brand_profile_json=brand_profile_json,
+            tone_name=tone_name,
+            tone_label=tone_label,
+            tone_description=tone_description,
             client_now=client_now,
             timezone=tz,
             posting_hour_local=posting_hour_local,
         )
         print(f"[topic_chats] Background generation done: {res}")
 
-        # Mark as done
         chat = db.execute(select(TopicChat).where(TopicChat.id == chat_id)).scalars().first()
         if chat:
             chat.generation_status = "done"
@@ -94,20 +107,22 @@ def _run_generation_in_background(
         db.close()
 
 
-# ── POST /topic-chats — returns instantly ─────────────────────────────────────
+# ── POST /topic-chats ─────────────────────────────────────────────────────────
 
 @router.post("")
 def create_topic_chat_and_generate(
     payload: TopicChatCreateRequest,
+    org: Organisation = Depends(get_current_org),   # ← NEW
     db: Session = Depends(get_db),
 ):
-    # 1) Create the TopicChat row immediately — client gets ID in < 1s
     chat_id = uuid.uuid4()
     now     = datetime.now(timezone.utc)
 
     chat = TopicChat(
         id=chat_id,
         brand_id=payload.brand_id,
+        tone_id=payload.tone_id,
+        org_id=org.id,
         topic=payload.topic,
         target_month=payload.target_month,
         posts_per_week=payload.posts_per_week,
@@ -116,14 +131,16 @@ def create_topic_chat_and_generate(
         updated_at=now,
     )
     db.add(chat)
-    db.commit()   # commit before spawning thread so row is visible immediately
+    db.commit()
 
-    # 2) Load brand profile (fast — one DB read)
     brand_profile_summary: str | None = None
     brand_profile_json:    dict | None = None
     try:
         brandData = db.execute(
-            select(Brand).where(Brand.id == payload.brand_id)
+            select(Brand).where(
+                Brand.id     == payload.brand_id,
+                Brand.org_id == org.id,             # ← scoped
+            )
         ).scalars().first()
         if brandData:
             brand_profile_summary = getattr(brandData, "profile_summary", None)
@@ -131,13 +148,42 @@ def create_topic_chat_and_generate(
     except Exception as e:
         print(f"[topic_chats] Brand load warning (non-fatal): {e}")
 
-    # 3) Fire generation in background daemon thread — do NOT await
+    tone_name: str | None = None
+    tone_label: str | None = None
+    tone_description: str | None = None
+
+    if payload.tone_id:
+        try:
+            tone = db.execute(
+                select(Tone).where(Tone.id == payload.tone_id)
+            ).scalars().first()
+
+            if not tone:
+                raise HTTPException(status_code=400, detail="Tone not found")
+
+            tone_name = tone.name
+            tone_label = tone.label
+            tone_description = tone.description
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"[topic_chats] Tone load warning (non-fatal): {e}")
+
     thread = threading.Thread(
         target=_run_generation_in_background,
         args=(
-            chat_id, payload.brand_id, payload.topic,
-            payload.target_month, payload.posts_per_week,
-            brand_profile_summary, brand_profile_json,
+            chat_id,
+            org.id,
+            payload.brand_id,
+            payload.tone_id,
+            payload.topic,
+            payload.target_month,
+            payload.posts_per_week,
+            brand_profile_summary,
+            brand_profile_json,
+            tone_name,
+            tone_label,
+            tone_description,
             payload.client_now,
             payload.timezone or "Europe/London",
             payload.posting_hour_local or 9,
@@ -146,30 +192,31 @@ def create_topic_chat_and_generate(
     )
     thread.start()
 
-    # Return immediately — frontend polls /status
     return {
         "topic_chat_id": str(chat_id),
         "status":        "processing",
     }
 
 
-# ── GET /topic-chats/{id}/status — polling endpoint ──────────────────────────
+# ── GET /{chat_id}/status ─────────────────────────────────────────────────────
 
 @router.get("/{chat_id}/status")
-def get_topic_chat_status(chat_id: str, db: Session = Depends(get_db)):
-    """
-    Frontend polls this every 4s.
-    Returns:
-      { status: "processing", drafts_so_far: N }
-      { status: "done", generated: N, failed: N }
-      { status: "failed", error: "..." }
-    """
+def get_topic_chat_status(
+    chat_id: str,
+    org: Organisation = Depends(get_current_org),   # ← NEW
+    db: Session = Depends(get_db),
+):
     try:
         cid = uuid.UUID(chat_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid chat id")
 
-    chat = db.execute(select(TopicChat).where(TopicChat.id == cid)).scalars().first()
+    chat = db.execute(
+        select(TopicChat).where(
+            TopicChat.id     == cid,
+            TopicChat.org_id == org.id,             # ← scoped
+        )
+    ).scalars().first()
     if not chat:
         raise HTTPException(status_code=404, detail="Topic chat not found")
 
@@ -188,7 +235,6 @@ def get_topic_chat_status(chat_id: str, db: Session = Depends(get_db)):
             "error":  getattr(chat, "generation_error", "Unknown error"),
         }
     else:
-        # Count drafts written so far — gives frontend a live progress number
         count = db.execute(
             select(ContentDraft).where(ContentDraft.topic_chat_id == cid)
         ).scalars().all()
@@ -198,16 +244,25 @@ def get_topic_chat_status(chat_id: str, db: Session = Depends(get_db)):
         }
 
 
-# ── All existing routes below — unchanged ────────────────────────────────────
+# ── GET /{chat_id} ────────────────────────────────────────────────────────────
 
 @router.get("/{chat_id}")
-def get_topic_chat(chat_id: str, db: Session = Depends(get_db)):
+def get_topic_chat(
+    chat_id: str,
+    org: Organisation = Depends(get_current_org),   # ← NEW
+    db: Session = Depends(get_db),
+):
     try:
         cid = uuid.UUID(chat_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid chat id")
 
-    chat = db.execute(select(TopicChat).where(TopicChat.id == cid)).scalars().first()
+    chat = db.execute(
+        select(TopicChat).where(
+            TopicChat.id     == cid,
+            TopicChat.org_id == org.id,             # ← scoped
+        )
+    ).scalars().first()
     if not chat:
         raise HTTPException(status_code=404, detail="Topic chat not found")
 
@@ -215,6 +270,7 @@ def get_topic_chat(chat_id: str, db: Session = Depends(get_db)):
         "id": str(chat.id),
         "brand_id": chat.brand_id,
         "topic": chat.topic,
+        "org_slug": org.slug,
         "background_images": chat.background_images,
         "target_month": chat.target_month,
         "posts_per_week": chat.posts_per_week,
@@ -222,12 +278,29 @@ def get_topic_chat(chat_id: str, db: Session = Depends(get_db)):
         "updated_at": chat.updated_at.isoformat() if chat.updated_at else None,
     }
 
+
+# ── GET /{chat_id}/drafts ─────────────────────────────────────────────────────
+
 @router.get("/{chat_id}/drafts")
-def list_chat_drafts(chat_id: str, db: Session = Depends(get_db)):
+def list_chat_drafts(
+    chat_id: str,
+    org: Organisation = Depends(get_current_org),   # ← NEW
+    db: Session = Depends(get_db),
+):
     try:
         cid = uuid.UUID(chat_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid chat id")
+
+    # Verify chat belongs to this org first
+    chat = db.execute(
+        select(TopicChat).where(
+            TopicChat.id     == cid,
+            TopicChat.org_id == org.id,             # ← scoped
+        )
+    ).scalars().first()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Topic chat not found")
 
     rows = db.execute(
         select(ContentDraft)
@@ -257,6 +330,7 @@ def list_chat_drafts(chat_id: str, db: Session = Depends(get_db)):
             "brand_id": d.brand_id,
             "platform": d.platform,
             "status": d.status,
+            "org_slug": org.slug,
             "body_text": d.body_text,
             "hashtags": d.hashtags,
             "structured": d.structured,
@@ -274,20 +348,34 @@ def list_chat_drafts(chat_id: str, db: Session = Depends(get_db)):
         for d in rows
     ]
 
+
+# ── POST /{chat_id}/regenerate ────────────────────────────────────────────────
+
 @router.post("/{chat_id}/regenerate")
-def regenerate(chat_id: str, payload: dict, db: Session = Depends(get_db)):
+def regenerate(
+    chat_id: str,
+    payload: dict,
+    org: Organisation = Depends(get_current_org),   # ← NEW
+    db: Session = Depends(get_db),
+):
     try:
         cid = uuid.UUID(chat_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid chat id")
 
-    chat = db.execute(select(TopicChat).where(TopicChat.id == cid)).scalars().first()
+    chat = db.execute(
+        select(TopicChat).where(
+            TopicChat.id     == cid,
+            TopicChat.org_id == org.id,             # ← scoped
+        )
+    ).scalars().first()
     if not chat:
         raise HTTPException(status_code=404, detail="Topic chat not found")
 
     res = generate_monthly_drafts(
         db=db,
         topic_chat_id=cid,
+        org_id=org.id,                              # ← NEW
         brand_id=chat.brand_id,
         topic=chat.topic,
         target_month=chat.target_month,
@@ -300,10 +388,20 @@ def regenerate(chat_id: str, payload: dict, db: Session = Depends(get_db)):
     )
     return res
 
+
+# ── GET "" — list topic chats ─────────────────────────────────────────────────
+
 @router.get("")
-def list_topic_chats(limit: int = Query(50, ge=1, le=500), db: Session = Depends(get_db)):
+def list_topic_chats(
+    limit: int = Query(50, ge=1, le=500),
+    org: Organisation = Depends(get_current_org),   # ← NEW
+    db: Session = Depends(get_db),
+):
     rows = db.execute(
-        select(TopicChat).order_by(TopicChat.created_at.desc()).limit(limit)
+        select(TopicChat)
+        .where(TopicChat.org_id == org.id)          # ← scoped
+        .order_by(TopicChat.created_at.desc())
+        .limit(limit)
     ).scalars().all()
 
     return [{
@@ -317,37 +415,56 @@ def list_topic_chats(limit: int = Query(50, ge=1, le=500), db: Session = Depends
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     } for c in rows]
 
+
+# ── PATCH /{topic_chat_id}/backgrounds ───────────────────────────────────────
+
 @router.patch("/{topic_chat_id}/backgrounds")
 def update_topic_chat_backgrounds(
     topic_chat_id: str,
     payload: TopicChatBackgroundUpdate,
+    org: Organisation = Depends(get_current_org),   # ← NEW
     db: Session = Depends(get_db),
 ):
-    chat = db.query(TopicChat).filter(TopicChat.id == topic_chat_id).first()
+    chat = db.execute(
+        select(TopicChat).where(
+            TopicChat.id     == topic_chat_id,
+            TopicChat.org_id == org.id,             # ← scoped
+        )
+    ).scalars().first()
     if not chat:
         raise HTTPException(status_code=404, detail="Topic chat not found")
 
     existing = chat.background_images or []
-    merged = list(dict.fromkeys(existing + payload.background_images))
+    merged   = list(dict.fromkeys(existing + payload.background_images))
 
     chat.background_images = merged
     db.commit()
 
     return {
-        "ok": True,
-        "count": len(merged),
+        "ok":               True,
+        "count":            len(merged),
         "background_images": merged,
     }
 
+
+# ── DELETE /{topic_chat_id} ───────────────────────────────────────────────────
+
 @router.delete("/{topic_chat_id}")
-def delete_topic_chat(topic_chat_id: str, db: Session = Depends(get_db)):
+def delete_topic_chat(
+    topic_chat_id: str,
+    org: Organisation = Depends(get_current_org),   # ← NEW
+    db: Session = Depends(get_db),
+):
     try:
         parsed_id = uuid.UUID(topic_chat_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid topic_chat_id format")
 
     chat = db.execute(
-        select(TopicChat).where(TopicChat.id == parsed_id)
+        select(TopicChat).where(
+            TopicChat.id     == parsed_id,
+            TopicChat.org_id == org.id,             # ← scoped
+        )
     ).scalars().first()
     if not chat:
         raise HTTPException(status_code=404, detail="Topic chat not found")

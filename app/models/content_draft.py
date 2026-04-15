@@ -9,6 +9,8 @@ class ContentDraft(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
+    org_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False, index=True)
+    tone_id = Column(UUID(as_uuid=True), ForeignKey("tones.id", ondelete="SET NULL"), nullable=True, index=True)
     topic_chat_id = Column(UUID(as_uuid=True), ForeignKey("topic_chats.id", ondelete="CASCADE"), nullable=False, index=True)
     brand_id = Column(String, nullable=False, index=True)
     platform = Column(String, nullable=False, index=True)

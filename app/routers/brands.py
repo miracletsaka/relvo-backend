@@ -8,19 +8,38 @@ from app.models.brand_profile import BrandProfile
 from app.models.media_asset import MediaAsset
 from app.models.topic_chat import TopicChat
 from app.models.content_draft import ContentDraft
+from app.dependencies.org import get_current_org, require_role
+from app.models.organisation import Organisation
 
 router = APIRouter(prefix="/brands", tags=["brands"])
 
+
 @router.get("", response_model=list[BrandOut])
-def list_brands(db: Session = Depends(get_db), active_only: bool = True):
-    q = select(Brand)
+def list_brands(
+    active_only: bool = True,
+    org: Organisation = Depends(get_current_org),
+    db: Session = Depends(get_db),
+):
+    print(f"Listing brands for org {org} and org {org.id} role of (active_only={active_only})")
+    q = select(Brand).where(Brand.org_id == org.id)
     if active_only:
         q = q.where(Brand.is_active == True)  # noqa
     return db.execute(q).scalars().all()
 
+
 @router.post("", response_model=BrandOut)
-def create_brand(payload: BrandCreate, db: Session = Depends(get_db)):
-    existing = db.get(Brand, payload.id)
+def create_brand(
+    payload: BrandCreate,
+    org: Organisation = Depends(get_current_org),
+    db: Session = Depends(get_db),
+):
+    # Check uniqueness within this org only
+    existing = db.execute(
+        select(Brand).where(
+            Brand.id     == payload.id.strip(),
+            Brand.org_id == org.id,
+        )
+    ).scalars().first()
     if existing:
         raise HTTPException(status_code=400, detail="Brand id already exists")
 
@@ -28,15 +47,27 @@ def create_brand(payload: BrandCreate, db: Session = Depends(get_db)):
         id=payload.id.strip(),
         display_name=payload.display_name.strip(),
         is_active=payload.is_active,
+        org_id=org.id,                # ← scoped to org
     )
     db.add(brand)
     db.commit()
     db.refresh(brand)
     return brand
 
+
 @router.patch("/{brand_id}", response_model=BrandOut)
-def update_brand(brand_id: str, payload: BrandUpdate, db: Session = Depends(get_db)):
-    brand = db.get(Brand, brand_id)
+def update_brand(
+    brand_id: str,
+    payload: BrandUpdate,
+    org: Organisation = Depends(get_current_org),
+    db: Session = Depends(get_db),
+):
+    brand = db.execute(
+        select(Brand).where(
+            Brand.id     == brand_id,
+            Brand.org_id == org.id,           # ← must belong to this org
+        )
+    ).scalars().first()
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found")
 
@@ -49,30 +80,45 @@ def update_brand(brand_id: str, payload: BrandUpdate, db: Session = Depends(get_
     db.refresh(brand)
     return brand
 
+
 @router.delete("/{brand_id}", status_code=204)
-def delete_brand(brand_id: str, db: Session = Depends(get_db)):
-    brand = db.get(Brand, brand_id)
+def delete_brand(
+    brand_id: str,
+    org: Organisation = Depends(require_role("owner", "admin")),  # only admins can delete
+    db: Session = Depends(get_db),
+):
+    brand = db.execute(
+        select(Brand).where(
+            Brand.id     == brand_id,
+            Brand.org_id == org.id,           # ← must belong to this org
+        )
+    ).scalars().first()
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found")
- 
-    # Step 1 — content drafts (brand_id is String, safe direct comparison)
-    db.execute(delete(ContentDraft).where(ContentDraft.brand_id == brand_id))
- 
-    # Step 2 — topic chats (brand_id is String, safe direct comparison)
-    db.execute(delete(TopicChat).where(TopicChat.brand_id == brand_id))
- 
-    # Step 3 — brand profile (String PK, no FK cascade)
+
+    # Step 1 — content drafts
+    db.execute(delete(ContentDraft).where(
+        ContentDraft.brand_id == brand_id,
+        ContentDraft.org_id   == org.id,      # ← extra safety check
+    ))
+
+    # Step 2 — topic chats
+    db.execute(delete(TopicChat).where(
+        TopicChat.brand_id == brand_id,
+        TopicChat.org_id   == org.id,
+    ))
+
+    # Step 3 — brand profile
     db.execute(delete(BrandProfile).where(BrandProfile.brand_id == brand_id))
- 
-    # Step 4 — media assets: brand_id column is UUID in DB but Brand.id is
-    # a plain string slug. SQLAlchemy tries to cast the string to UUID and
-    # PostgreSQL rejects it. Use raw SQL to compare as text instead.
+
+    # Step 4 — media assets (raw SQL keeps the UUID/text cast fix you already had)
     db.execute(text("""
         UPDATE media_assets
         SET brand_id = NULL, brand_name = NULL
         WHERE brand_id::text = :brand_id
-    """), {"brand_id": brand_id})
- 
+        AND   org_id  = :org_id
+    """), {"brand_id": brand_id, "org_id": str(org.id)})
+
     # Step 5 — brand itself
     db.delete(brand)
     db.commit()

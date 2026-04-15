@@ -1,5 +1,4 @@
-# app/models/template.py
-from sqlalchemy import Column, String, DateTime, Text
+from sqlalchemy import UUID, Column, ForeignKey, String, DateTime, Text
 from datetime import datetime
 from app.database import Base
 
@@ -8,11 +7,13 @@ class Template(Base):
 
     id = Column(String, primary_key=True)
     brand_id = Column(String, index=True, nullable=True)
-
+    org_id = Column(String, index=True, nullable=True)  # ← ADD THIS
+    orientation = Column(String, nullable=False, default="portrait")
+    tone_id = Column(UUID(as_uuid=True), ForeignKey("tones.id", ondelete="SET NULL"), nullable=True)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
 
-    shapes_json = Column(Text, nullable=False)  # JSON string
+    shapes_json = Column(Text, nullable=False)
     canvas_width = Column(String, nullable=False)
     canvas_height = Column(String, nullable=False)
 
@@ -23,4 +24,4 @@ class Template(Base):
     preview_url = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)  # ✅
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

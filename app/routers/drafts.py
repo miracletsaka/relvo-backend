@@ -3,9 +3,12 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import select, desc
+
 from app.database import get_db
 from app.models.content_draft import ContentDraft
 from app.models.topic_chat import TopicChat
+from app.dependencies.org import get_current_org
+from app.models.organisation import Organisation
 
 router = APIRouter(prefix="/drafts", tags=["drafts"])
 
@@ -62,17 +65,23 @@ def _draft_to_dict(d: ContentDraft, chat: TopicChat | None = None):
 
 
 # ---------------------------
-# 1) LIST ALL DRAFTS
+# 1) LIST ALL DRAFTS (SCOPED)
 # ---------------------------
 
 @router.get("")
 def list_all_drafts(
     limit: int = Query(200, ge=1, le=1000),
+    org: Organisation = Depends(get_current_org),
     db: Session = Depends(get_db),
 ):
     rows = db.execute(
         select(ContentDraft, TopicChat)
-        .join(TopicChat, TopicChat.id == ContentDraft.topic_chat_id)
+        .join(
+            TopicChat,
+            (TopicChat.id == ContentDraft.topic_chat_id)
+            & (TopicChat.org_id == org.id)   # 🔒 enforce same org
+        )
+        .where(ContentDraft.org_id == org.id)  # 🔒 enforce org
         .order_by(desc(ContentDraft.updated_at), desc(ContentDraft.created_at))
         .limit(limit)
     ).all()
@@ -81,16 +90,56 @@ def list_all_drafts(
 
 
 # ---------------------------
-# 3) UPDATE DRAFT
+# 2) GET SINGLE DRAFT (SCOPED)
+# ---------------------------
+
+@router.get("/{draft_id}")
+def get_draft(
+    draft_id: str,
+    org: Organisation = Depends(get_current_org),
+    db: Session = Depends(get_db),
+):
+    try:
+        did = uuid.UUID(draft_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid draft id")
+
+    draft = db.execute(
+        select(ContentDraft).where(
+            ContentDraft.id == did,
+            ContentDraft.org_id == org.id   # 🔒 enforce org
+        )
+    ).scalar_one_or_none()
+
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    chat = db.execute(
+        select(TopicChat).where(
+            TopicChat.id == draft.topic_chat_id,
+            TopicChat.org_id == org.id   # 🔒 enforce org
+        )
+    ).scalar_one_or_none()
+
+    return _draft_to_dict(draft, chat)
+
+
+# ---------------------------
+# 3) UPDATE DRAFT (SCOPED)
 # ---------------------------
 
 @router.patch("/{draft_id}")
 def update_draft(
     draft_id: str,
     payload: dict,
+    org: Organisation = Depends(get_current_org),
     db: Session = Depends(get_db),
 ):
-    draft = db.query(ContentDraft).filter(ContentDraft.id == draft_id).first()
+    draft = db.query(ContentDraft).filter(
+        ContentDraft.id == draft_id,
+        ContentDraft.org_id == org.id   # 🔒 enforce org
+    ).first()
+
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
 
@@ -109,16 +158,21 @@ def update_draft(
 
 
 # ---------------------------
-# 4) ATTACH MEDIA
+# 4) ATTACH MEDIA (SCOPED)
 # ---------------------------
 
 @router.patch("/{draft_id}/media")
 def attach_media(
     draft_id: str,
     payload: dict,
+    org: Organisation = Depends(get_current_org),
     db: Session = Depends(get_db),
 ):
-    draft = db.query(ContentDraft).filter(ContentDraft.id == draft_id).first()
+    draft = db.query(ContentDraft).filter(
+        ContentDraft.id == draft_id,
+        ContentDraft.org_id == org.id   # 🔒 enforce org
+    ).first()
+
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
 
@@ -135,12 +189,13 @@ def attach_media(
 
 
 # ---------------------------
-# 5) BULK REJECT
+# 5) BULK REJECT (SCOPED)
 # ---------------------------
 
 @router.post("/bulk-reject")
 def bulk_reject(
     payload: dict,
+    org: Organisation = Depends(get_current_org),
     db: Session = Depends(get_db),
 ):
     ids = payload.get("content_item_ids", [])
@@ -149,7 +204,10 @@ def bulk_reject(
     if not ids:
         raise HTTPException(status_code=400, detail="No draft IDs provided")
 
-    drafts = db.query(ContentDraft).filter(ContentDraft.id.in_(ids)).all()
+    drafts = db.query(ContentDraft).filter(
+        ContentDraft.id.in_(ids),
+        ContentDraft.org_id == org.id   # 🔒 enforce org
+    ).all()
 
     for d in drafts:
         d.status = "REJECTED"
@@ -159,42 +217,26 @@ def bulk_reject(
 
     return {"ok": True, "count": len(drafts)}
 
-def _parse_media_urls(v):
-    if not v:
-        return []
-    if isinstance(v, list):
-        return v
-    if isinstance(v, str):
-        try:
-            parsed = json.loads(v)
-            return parsed if isinstance(parsed, list) else []
-        except Exception:
-            return []
-    return []
 
-@router.get("/{draft_id}")
-def get_draft_alias(draft_id: str, db: Session = Depends(get_db)):
-
-    print("data_id:", draft_id)
-    # validate UUID
-    try:
-        did = uuid.UUID(draft_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid draft id")
-
-    draft = db.execute(select(ContentDraft).where(ContentDraft.id == did)).scalar_one_or_none()
-    if not draft:
-        raise HTTPException(status_code=404, detail="Draft not found")
-
-    chat = db.execute(select(TopicChat).where(TopicChat.id == draft.topic_chat_id)).scalar_one_or_none()
-    return _draft_to_dict(draft, chat)
-
+# ---------------------------
+# 6) DELETE DRAFT (SCOPED)
+# ---------------------------
 
 @router.delete("/{draft_id}")
-async def delete_draft(draft_id: str, db: Session = Depends(get_db)):
-    draft = db.query(ContentDraft).filter(ContentDraft.id == draft_id).first()
+def delete_draft(
+    draft_id: str,
+    org: Organisation = Depends(get_current_org),
+    db: Session = Depends(get_db),
+):
+    draft = db.query(ContentDraft).filter(
+        ContentDraft.id == draft_id,
+        ContentDraft.org_id == org.id   # 🔒 enforce org
+    ).first()
+
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
+
     db.delete(draft)
     db.commit()
+
     return {"deleted": draft_id}

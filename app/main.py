@@ -7,9 +7,11 @@ from app.routers.content import router as content_router
 from app.routers.approvals import router as approvals_router
 from app.routers import platforms
 from app.routers import stats
+from app.routers import org_profile
 from app.routers import schedule
+from app.routers import public_profile
+from app.routers import organisations
 from app.routers import publisher
-from app.routers import bulk_calendar
 from app.routers import export
 from app.routers import publishing
 from app.routers import make_bridge
@@ -19,6 +21,7 @@ from app.routers import brand_profiles
 from app.routers.auth import router as auth_router
 from app.routers import admin_users
 from app.routers import planner
+from app.routers import tones
 from app.routers import topic_chats
 from app.routers import drafts
 from app.routers import content_drafts
@@ -48,9 +51,14 @@ app.include_router(content_router)
 app.include_router(approvals_router)
 app.include_router(generation_router)
 app.include_router(brands.router)
+app.include_router(organisations.router)
 app.include_router(platforms.router)
 app.include_router(stats.router)
 app.include_router(schedule.router)
+app.include_router(org_profile.router)
+app.include_router(public_profile.router)
+app.include_router(planner.router)
+app.include_router(tones.router)
 app.include_router(publisher.router)
 app.include_router(export.router)
 app.include_router(publishing.router)
