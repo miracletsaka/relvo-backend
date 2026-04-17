@@ -316,7 +316,7 @@ async def invite_member(
         link = verify_link(token)
         await send_email(
             to=email,
-            subject=f"You've been invited to {org.name} on NeuroFlow AI",
+            subject=f"You've been invited to {org.name} on Relvō AI",
             html=f"""
             <div style="font-family: Arial, Helvetica, sans-serif; background:#f6f7fb; padding:32px;">
               <div style="max-width:560px; margin:0 auto; background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; padding:32px;">
@@ -347,18 +347,18 @@ async def invite_member(
         # Existing user — just notify them
         await send_email(
             to=email,
-            subject=f"You've been added to {org.name} on NeuroFlow AI",
+            subject=f"You've been added to {org.name} on Relvō AI",
             html=f"""
             <div style="font-family: Arial, Helvetica, sans-serif; background:#f6f7fb; padding:32px;">
               <div style="max-width:560px; margin:0 auto; background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; padding:32px;">
                 <h2 style="margin:0 0 16px; color:#111827;">You've been added to {org.name}</h2>
                 <p style="margin:0 0 16px; color:#374151; font-size:14px; line-height:1.6;">
                   <strong>{user.email}</strong> has added you to <strong>{org.name}</strong> as a <strong>{payload.role}</strong>.
-                  Log in to NeuroFlow to switch to this workspace.
+                  Log in to Relvō to switch to this workspace.
                 </p>
                 <div style="margin:24px 0;">
                   <a href="{verify_link('').rsplit('/', 1)[0].replace('/verify-email', '')}/auth/login" style="display:inline-block; background:#6d28d9; color:#ffffff; text-decoration:none; padding:12px 18px; border-radius:10px; font-size:14px; font-weight:700;">
-                    Go to NeuroFlow
+                    Go to Relvō
                   </a>
                 </div>
               </div>

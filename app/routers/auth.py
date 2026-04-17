@@ -126,7 +126,7 @@ async def register(payload: RegisterIn, db: DbSession = Depends(get_db)):
         html=f"""
         <div style="font-family: Arial, Helvetica, sans-serif; background:#f6f7fb; padding:32px;">
           <div style="max-width:560px; margin:0 auto; background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; padding:32px;">
-            <h2 style="margin:0 0 16px; color:#111827;">Welcome to NeuroFlow AI</h2>
+            <h2 style="margin:0 0 16px; color:#111827;">Welcome to Relvō AI</h2>
             <p style="margin:0 0 12px; color:#374151; font-size:14px; line-height:1.6;">
               Hi {first_name},
             </p>

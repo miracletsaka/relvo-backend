@@ -48,6 +48,8 @@ def create_brand(
         display_name=payload.display_name.strip(),
         is_active=payload.is_active,
         org_id=org.id,                # ← scoped to org
+        logo_url=payload.logo_url,
+        primary_color=payload.primary_color,
     )
     db.add(brand)
     db.commit()

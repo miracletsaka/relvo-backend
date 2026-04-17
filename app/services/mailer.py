@@ -4,7 +4,7 @@ import aiosmtplib
 
 GMAIL_USER = os.getenv("GMAIL_USER", "").strip()
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "").strip()
-EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "NeuroFlow").strip()
+EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Relvō").strip()
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:3000").strip()
 
 async def send_email(to: str, subject: str, html: str):

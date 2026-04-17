@@ -39,6 +39,7 @@ from app.models.org_profile import (
 )
 from app.models.org_images import OrgImage, ReviewToken, ReviewRequest
 from app.services.mailer import send_email
+from app.models.brand import Brand
 
 router = APIRouter(tags=["public"])
 
@@ -74,11 +75,6 @@ def _frontend_url(request: Request) -> str:
 
 class ReviewEmailRequest(BaseModel):
     email: str = Field(..., min_length=3, max_length=320)
-
-class ReviewSubmit(BaseModel):
-    author_name: str   = Field(..., min_length=1, max_length=200)
-    rating:      float = Field(..., ge=1.0, le=5.0)
-    body:        Optional[str] = Field(None, max_length=2000)
 
 class OrgImageIn(BaseModel):
     type:       str           = "gallery"
@@ -121,7 +117,7 @@ def _email_html(org_name: str, link: str, intro: str, note_html: str = "") -> st
       </p>
     </div>
     <div style="border-top:1px solid #f3f4f6;padding:18px 40px;text-align:center;">
-      <p style="margin:0;color:#d1d5db;font-size:11px;">Powered by NeuroFlow AI · Verified Reviews</p>
+      <p style="margin:0;color:#d1d5db;font-size:11px;">Powered by Relvō · Verified Reviews</p>
     </div>
   </div>
 </div>"""
@@ -265,31 +261,54 @@ def validate_review_token(slug: str, token: str, db: Session = Depends(get_db)):
             ReviewToken.token_hash == _hash_token(token),
         )
     ).scalars().first()
-
+ 
     if not rt:
         raise HTTPException(404, {"code": "INVALID_TOKEN", "message": "This review link is invalid."})
     if rt.used_at:
         raise HTTPException(409, {"code": "ALREADY_USED",  "message": "This link has already been used."})
     if rt.expires_at.replace(tzinfo=timezone.utc) < now:
         raise HTTPException(410, {"code": "EXPIRED",       "message": "This link has expired. Please request a new one."})
-
+ 
     biz = db.execute(
         select(OrgBusinessInfo).where(OrgBusinessInfo.org_id == org.id)
     ).scalars().first()
-
+ 
     images = db.execute(
         select(OrgImage).where(OrgImage.org_id == org.id, OrgImage.is_active == True)  # noqa
     ).scalars().all()
-
+ 
+    brand = db.execute(
+        select(Brand).where(Brand.org_id == org.id, Brand.is_active == True)  # noqa
+        .order_by(Brand.created_at.asc())
+    ).scalars().first()
+ 
+    profile_image = next((i for i in images if i.type == "profile"), None)
+    org_logo_url  = (
+        brand.logo_url if brand and brand.logo_url         # brand logo first
+        else profile_image.url if profile_image            # fallback to profile image
+        else None
+    )
+ 
     return {
         "ok":    True,
         "email": rt.email,
         "org":   {"name": org.name, "slug": org.slug},
         "business_info":  biz.to_dict() if biz else None,
-        "profile_image":  next((i.to_dict() for i in images if i.type == "profile"), None),
+        "profile_image":  profile_image.to_dict() if profile_image else None,
+        "org_logo_url":   org_logo_url,   # ← NEW: for review card generation
     }
 
-
+class ReviewSubmit(BaseModel):
+    author_name:          str            = Field(..., min_length=1, max_length=200)
+    rating:               float          = Field(..., ge=1.0, le=5.0)
+    body:                 Optional[str]  = Field(None, max_length=2000)
+    # NEW: optional image URLs uploaded by the reviewer
+    reviewer_photo_url:   Optional[str]  = Field(None, max_length=1000)
+    product_image_url:    Optional[str]  = Field(None, max_length=1000)
+ 
+ 
+# ── 2. Replace submit_verified_review ─────────────────────────────────────────
+ 
 @router.post("/public/biz/{slug}/review/{token}", status_code=201)
 def submit_verified_review(
     slug:    str,
@@ -305,16 +324,16 @@ def submit_verified_review(
             ReviewToken.token_hash == _hash_token(token),
         )
     ).scalars().first()
-
+ 
     if not rt:
         raise HTTPException(404, {"code": "INVALID_TOKEN", "message": "Invalid review link."})
     if rt.used_at:
         raise HTTPException(409, {"code": "ALREADY_USED",  "message": "Already submitted."})
     if rt.expires_at.replace(tzinfo=timezone.utc) < now:
         raise HTTPException(410, {"code": "EXPIRED",       "message": "Link expired."})
-
+ 
     rt.used_at = now
-
+ 
     review = OrgReview(
         id=uuid.uuid4(),
         org_id=org.id,
@@ -324,10 +343,15 @@ def submit_verified_review(
         body=payload.body.strip() if payload.body else None,
         source="Verified",
         is_featured=False,
+        is_verified=True,                          # ← always True for token-gated reviews
         reviewer_email=rt.email,
+        # NEW: store source images + initialise card status
+        reviewer_photo_url=payload.reviewer_photo_url or None,
+        product_image_url=payload.product_image_url   or None,
+        card_status="pending",
     )
     db.add(review)
-
+ 
     rr = db.execute(
         select(ReviewRequest).where(
             ReviewRequest.org_id == org.id,
@@ -336,14 +360,52 @@ def submit_verified_review(
     ).scalars().first()
     if rr:
         rr.reviewed_at = now
-
+ 
     db.commit()
     db.refresh(review)
-
+ 
     result = review.to_dict()
     result.pop("reviewer_email", None)
     return {"ok": True, "review": result}
-
+ 
+ 
+# ── 3. Add PATCH endpoint to save the generated card URL ──────────────────────
+# Mount this alongside the other public routes.
+ 
+@router.patch("/public/biz/{slug}/review-card", status_code=200)
+def save_review_card_url(
+    slug: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+):
+    """
+    Called by the frontend after it renders + uploads the review card image.
+    Saves card_image_url + sets card_status = 'generated' on the review.
+    """
+    review_id     = payload.get("review_id")
+    card_image_url = payload.get("card_image_url")
+ 
+    if not review_id or not card_image_url:
+        raise HTTPException(400, "review_id and card_image_url are required")
+ 
+    try:
+        uid = uuid.UUID(str(review_id))
+    except ValueError:
+        raise HTTPException(400, "Invalid review_id")
+ 
+    review = db.execute(
+        select(OrgReview).where(OrgReview.id == uid)
+    ).scalars().first()
+ 
+    if not review:
+        raise HTTPException(404, "Review not found")
+ 
+    review.card_image_url = card_image_url
+    review.card_status    = "generated"
+    db.commit()
+ 
+    return {"ok": True}
+ 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PRIVATE ENDPOINTS

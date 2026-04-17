@@ -62,48 +62,51 @@ from sqlalchemy.sql import func
 
 class OrgReview(Base):
     __tablename__ = "org_reviews"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-
-    org_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("organisations.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True
-    )
-
-    author_name = Column(String(200), nullable=False)
-    rating = Column(Float, nullable=False)  # 1.0 – 5.0
-    body = Column(Text, nullable=True)
-    source = Column(String(100), nullable=True)
-    review_date = Column(Date, nullable=True)
-
-    is_featured = Column(Boolean, default=False, nullable=False)
-    is_verified = Column(Boolean, default=False, nullable=False)  # ✅ ADDED
-
-    reviewer_email = Column(String(320), nullable=True)  # ✅ ADDED
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
-    __table_args__ = (
-        CheckConstraint('rating >= 1 AND rating <= 5', name='org_reviews_rating_check'),
-    )
-
+ 
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    org_id          = Column(UUID(as_uuid=True), ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False, index=True)
+ 
+    # Core review data
+    author_name     = Column(String(200), nullable=False)
+    rating          = Column(Float, nullable=False)
+    body            = Column(Text, nullable=True)
+    source          = Column(String(100), nullable=True, default="Website")
+    review_date     = Column(DateTime(timezone=True), nullable=True)
+ 
+    # Flags
+    is_featured     = Column(Boolean, default=False, nullable=False)
+    is_verified     = Column(Boolean, default=False, nullable=False)
+    reviewer_email  = Column(String(320), nullable=True)
+ 
+    # ── NEW: source images uploaded by reviewer ───────────────────────────────
+    reviewer_photo_url  = Column(Text, nullable=True)   # identity/profile photo
+    product_image_url   = Column(Text, nullable=True)   # product/showcase image
+ 
+    # ── NEW: generated review card image ─────────────────────────────────────
+    card_image_url  = Column(Text, nullable=True)
+    card_status     = Column(String(20), nullable=True, default="pending")
+    # card_status: 'pending' | 'generated' | 'failed'
+ 
+    created_at      = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at      = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+ 
     def to_dict(self):
         return {
-            "id": str(self.id),
-            "org_id": str(self.org_id),
-            "author_name": self.author_name,
-            "rating": self.rating,
-            "body": self.body,
-            "source": self.source,
-            "review_date": self.review_date.isoformat() if self.review_date else None,
-            "is_featured": self.is_featured,
-            "is_verified": self.is_verified,  # ✅ ADDED
-            "reviewer_email": self.reviewer_email,  # ✅ ADDED
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "id":                  str(self.id),
+            "org_id":              str(self.org_id),
+            "author_name":         self.author_name,
+            "rating":              self.rating,
+            "body":                self.body,
+            "source":              self.source,
+            "review_date":         self.review_date.isoformat()  if self.review_date  else None,
+            "is_featured":         self.is_featured,
+            "is_verified":         self.is_verified,
+            "reviewer_photo_url":  self.reviewer_photo_url,
+            "product_image_url":   self.product_image_url,
+            "card_image_url":      self.card_image_url,
+            "card_status":         self.card_status,
+            "created_at":          self.created_at.isoformat()   if self.created_at   else None,
+            "updated_at":          self.updated_at.isoformat()   if self.updated_at   else None,
         }
 
 

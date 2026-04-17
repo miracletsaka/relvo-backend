@@ -328,6 +328,9 @@ FORMATTING — NON-NEGOTIABLE RULES
 ✅ UPPERCASE allowed for emphasis, but use sparingly
 ✅ Bullet lines in captions may start with * if useful
 ✅ Keep text clean and copy-paste ready
+✅ Use simple student english, avoid jargon or complex phrasing
+
+❌ Do not use the word "Transform" or "Elevate" in the copy — these are overused and generic marketing buzzwords
 
 ❌ NO ** bold, NO * italic, NO _ underline, NO # headers, NO ` code, NO ~~ strike
 

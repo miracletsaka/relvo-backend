@@ -15,7 +15,7 @@ def send_verify_email(to_email: str, verify_url: str):
     _require()
     resend.api_key = RESEND_API_KEY
 
-    subject = "Verify your NeuroFlow account"
+    subject = "Verify your Relvō account"
     html = f"""
     <div style="font-family:Arial,sans-serif;line-height:1.5">
       <h2>Verify your email</h2>
