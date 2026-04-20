@@ -117,7 +117,7 @@ def _email_html(org_name: str, link: str, intro: str, note_html: str = "") -> st
       </p>
     </div>
     <div style="border-top:1px solid #f3f4f6;padding:18px 40px;text-align:center;">
-      <p style="margin:0;color:#d1d5db;font-size:11px;">Powered by Relvō · Verified Reviews</p>
+      <p style="margin:0;color:#d1d5db;font-size:11px;">Powered by Relvo · Verified Reviews</p>
     </div>
   </div>
 </div>"""

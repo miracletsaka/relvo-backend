@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
     Column, String, Boolean, Integer, DateTime,
-    ForeignKey, UniqueConstraint
+    ForeignKey, Text, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -50,6 +50,7 @@ class Organisation(Base):
 
     id      = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name    = Column(String(255), nullable=False)
+    logo_url = Column(Text, nullable=True)
     slug    = Column(String(100), nullable=False, unique=True)
     plan    = Column(String(50),  nullable=False, default="free")
 
@@ -84,8 +85,10 @@ class Organisation(Base):
         return {
             "id":      str(self.id),
             "name":    self.name,
+            "logo_url": self.logo_url,
             "slug":    self.slug,
             "plan":    self.plan,
+            "logo_url": self.logo_url,
             "limits": {
                 "max_brands":     self.get_limit("max_brands"),
                 "max_platforms":  self.get_limit("max_platforms"),

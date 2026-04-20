@@ -22,6 +22,9 @@ from app.services.sessions import (
     clear_org_cookie,
     COOKIE_NAME,
 )
+from app.dependencies.org import get_current_org
+from app.services.authz import get_current_user
+from typing import Optional
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -126,7 +129,7 @@ async def register(payload: RegisterIn, db: DbSession = Depends(get_db)):
         html=f"""
         <div style="font-family: Arial, Helvetica, sans-serif; background:#f6f7fb; padding:32px;">
           <div style="max-width:560px; margin:0 auto; background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; padding:32px;">
-            <h2 style="margin:0 0 16px; color:#111827;">Welcome to Relvō AI</h2>
+            <h2 style="margin:0 0 16px; color:#111827;">Welcome to Relvo AI</h2>
             <p style="margin:0 0 12px; color:#374151; font-size:14px; line-height:1.6;">
               Hi {first_name},
             </p>
@@ -263,49 +266,29 @@ def logout(req: Request, resp: Response, db: DbSession = Depends(get_db)):
 
 
 @router.get("/me")
-def get_me(request: Request, db: DbSession = Depends(get_db)):
-    token = request.cookies.get(COOKIE_NAME)
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    token_hash = hash_session_token(token)
-
-    session = db.execute(
-        select(UserSession).where(
-            UserSession.session_token == token_hash,
-            UserSession.revoked_at.is_(None),
-            UserSession.expires_at > datetime.now(timezone.utc),
-        )
-    ).scalars().first()
-
-    if not session:
-        raise HTTPException(status_code=401, detail="Session expired")
-
-    user = db.execute(
-        select(User).where(User.id == session.user_id)
-    ).scalars().first()
-
-    if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="User not found or inactive")
-
-    org_id = str(session.org_id) if session.org_id else None
+def get_me(
+    user: User = Depends(get_current_user),
+    org: Optional[Organisation] = Depends(get_current_org),
+    db: DbSession = Depends(get_db),
+):
     role = None
 
-    if org_id:
+    if org:
         member = db.execute(
             select(OrganisationMember).where(
-                OrganisationMember.org_id == session.org_id,
+                OrganisationMember.org_id == org.id,
                 OrganisationMember.user_id == user.id,
             )
         ).scalars().first()
-        role = member.role if member else "member"
+
+        role = member.role if member else None
 
     return {
         "id": str(user.id),
         "email": user.email,
         "first_name": user.first_name,
         "last_name": user.last_name,
-        "org_id": org_id,
+        "org_id": str(org.id) if org else None,
         "role": role,
         "is_email_verified": user.is_email_verified,
     }

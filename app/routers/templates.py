@@ -71,6 +71,7 @@ def get_random_template(
     org = Depends(get_current_org),
     db: Session = Depends(get_db),
 ):
+    # 🔹 Base query
     base_q = select(Template).where(Template.org_id == str(org.id))
 
     if brand_id:
@@ -79,67 +80,59 @@ def get_random_template(
     if tone_id:
         base_q = base_q.where(Template.tone_id == tone_id)
 
-    if orientation:
-        base_q = base_q.where(Template.orientation == orientation)
+    # 🔹 Subquery for served templates (IMPORTANT: no Python list)
+    served_subq = select(TemplateServe.template_id).where(
+        TemplateServe.org_id == org.id
+    )
 
-    # 🔹 Get served templates
-    served_ids = db.execute(
-        select(TemplateServe.template_id).where(
-            TemplateServe.org_id == org.id
-        )
-    ).scalars().all()
-
-    if served_ids:
-        base_q = base_q.where(~Template.id.in_(served_ids))
-
-    # 🔹 Get random template
+    # 🔹 Try: unserved templates first
     template = db.execute(
-        base_q.order_by(func.random())
+        base_q.where(~Template.id.in_(served_subq))
+              .order_by(func.random())
     ).scalars().first()
 
-    # 🔁 Reset if none left
+    # 🔁 Fallback: if none, ignore served history (guaranteed result)
     if not template:
-        db.query(TemplateServe).filter(
-            TemplateServe.org_id == org.id
-        ).delete()
-        db.commit()
-
         template = db.execute(
             base_q.order_by(func.random())
         ).scalars().first()
 
+    # ❌ Truly no templates in DB
     if not template:
-        return {"success": False}
+        return {"success": False, "reason": "no_templates_found"}
 
-    # 🔹 Save serve
-    db.add(TemplateServe(
-        template_id=template.id,
-        org_id=org.id,
-        brand_id=brand_id,
-        tone_id=tone_id,
-        orientation=orientation
-    ))
-    db.commit()
+    # 🔹 Save serve (race-safe-ish with try/except)
+    try:
+        db.add(TemplateServe(
+            template_id=template.id,
+            org_id=org.id,
+            brand_id=brand_id,
+            tone_id=tone_id,
+            orientation=orientation
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()  # ignore duplicates / race issues
 
-    # ✅ 🔥 FORMAT RESPONSE EXACTLY AS YOU WANT
+    # 🔹 Format response
     t = template
 
     return {
-            "id": t.id,
-            "brand_id": t.brand_id,
-            "name": t.name,
-            "description": t.description,
-            "shapes": json.loads(t.shapes_json or "[]"),
-            "canvasWidth": int(t.canvas_width),
-            "canvasHeight": int(t.canvas_height),
-            "orientation": t.orientation,
-            "backgroundImage": t.background_image,
-            "logoPlacement": json.loads(t.logo_placement_json) if t.logo_placement_json else None,
-            "thumbnail_url": t.thumbnail_url,
-            "preview_url": t.preview_url,
-            "createdAt": t.created_at.isoformat() if t.created_at else None,
-            "updatedAt": t.updated_at.isoformat() if t.updated_at else None,
-        }
+        "id": t.id,
+        "brand_id": t.brand_id,
+        "name": t.name,
+        "description": t.description,
+        "shapes": json.loads(t.shapes_json or "[]"),
+        "canvasWidth": int(t.canvas_width),
+        "canvasHeight": int(t.canvas_height),
+        "orientation": t.orientation,
+        "backgroundImage": t.background_image,
+        "logoPlacement": json.loads(t.logo_placement_json) if t.logo_placement_json else None,
+        "thumbnail_url": t.thumbnail_url,
+        "preview_url": t.preview_url,
+        "createdAt": t.created_at.isoformat() if t.created_at else None,
+        "updatedAt": t.updated_at.isoformat() if t.updated_at else None,
+    }
 
 
 @router.patch("/{template_id}")
@@ -191,8 +184,6 @@ def create_template(
     org = Depends(get_current_org),          # ← NEW
     db: Session = Depends(get_db),
 ):
-
-    print("payload:",payload)
     tid = str(uuid.uuid4())
     now = datetime.utcnow()
 
@@ -241,6 +232,7 @@ def list_templates(
         {
             "id": t.id,
             "brand_id": t.brand_id,
+            "tone_id": t.tone_id,
             "name": t.name,
             "description": t.description,
             "shapes": json.loads(t.shapes_json or "[]"),

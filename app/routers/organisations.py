@@ -5,16 +5,12 @@ Org management endpoints:
   POST   /organisations                       → create org (onboarding)
   GET    /organisations/my-orgs               → all orgs this user belongs to
   GET    /organisations/me                    → current org details + usage
-  PATCH  /organisations/me                    → update org name/slug
+  PATCH  /organisations/me                    → update org name/slug/logo_url
   GET    /organisations/me/members            → list members
   POST   /organisations/me/invite             → invite member by email
   PATCH  /organisations/me/members/{user_id}  → change role
   DELETE /organisations/me/members/{user_id}  → remove member
   POST   /organisations/switch/{org_id}       → switch active org
-
-Mount in main.py:
-    from app.routers import organisations
-    app.include_router(organisations.router, prefix="/organisations", tags=["organisations"])
 """
 import re
 import uuid
@@ -22,7 +18,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
@@ -41,6 +37,8 @@ from app.models.organisation import Organisation, OrganisationMember
 from app.models.user import User
 from app.models.brand import Brand
 from app.models.platform import Platform
+from app.services.sessions import set_org_cookie
+from app.models.org_profile import OrgBusinessInfo
 
 router = APIRouter(prefix="/organisations", tags=["organisations"])
 
@@ -56,8 +54,9 @@ class CreateOrgRequest(BaseModel):
 
 
 class UpdateOrgRequest(BaseModel):
-    name: Optional[str] = None
-    slug: Optional[str] = None
+    name:     Optional[str] = None
+    slug:     Optional[str] = None
+    logo_url: Optional[str] = None   # ← NEW: organisation logo
 
 
 class InviteMemberRequest(BaseModel):
@@ -90,13 +89,12 @@ def _ensure_unique_slug(db: Session, slug: str, exclude_id=None) -> str:
 
 
 def _set_org_cookie(response: JSONResponse, org_id: str) -> JSONResponse:
-    """Attach the nf_org cookie so the proxy knows which org is active."""
     response.set_cookie(
         key=_NF_ORG,
         value=org_id,
-        httponly=False,   # must be readable by the Next.js proxy
+        httponly=False,
         samesite="lax",
-        secure=False,     # set True in production (HTTPS only)
+        secure=False,
         max_age=_MAX_AGE,
     )
     return response
@@ -107,13 +105,10 @@ def _set_org_cookie(response: JSONResponse, org_id: str) -> JSONResponse:
 @router.post("")
 def create_organisation(
     payload: CreateOrgRequest,
-    db:      Session = Depends(get_db),
-    user             = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    user = Depends(get_current_user),
+    resp: Response = None,
 ):
-    """
-    Create a new organisation. Requires a valid login session only — no org needed.
-    Called from /onboarding (first org) or Settings > New Workspace (additional orgs).
-    """
     slug = _ensure_unique_slug(db, payload.slug or _slugify(payload.name))
 
     org = Organisation(
@@ -123,7 +118,7 @@ def create_organisation(
         plan="free",
     )
     db.add(org)
-    db.flush()   # resolve org.id before FK
+    db.flush()
 
     db.add(OrganisationMember(
         org_id=org.id,
@@ -134,10 +129,9 @@ def create_organisation(
     db.commit()
     db.refresh(org)
 
-    return _set_org_cookie(
-        JSONResponse({"ok": True, "organisation": org.to_dict(), "role": "owner"}),
-        str(org.id),
-    )
+    set_org_cookie(resp, str(org.id))
+
+    return {"ok": True, "organisation": org.to_dict(), "role": "owner"}
 
 
 # ── GET /organisations/my-orgs ────────────────────────────────────────────────
@@ -147,10 +141,6 @@ def list_my_organisations(
     db:   Session = Depends(get_db),
     user          = Depends(get_current_user),
 ):
-    """
-    Returns all organisations the logged-in user belongs to.
-    Used to populate the org-switcher dropdown. No current org required.
-    """
     rows = db.execute(
         select(Organisation, OrganisationMember)
         .join(OrganisationMember, OrganisationMember.org_id == Organisation.id)
@@ -200,6 +190,52 @@ def get_current_organisation(
         },
     }
 
+@router.get("/me/business-info")
+def get_org_business_info(
+    org: Organisation = Depends(get_current_org),
+    db:  Session      = Depends(get_db),
+):
+    """
+    Returns org_business_info row for the current org.
+    Sidebar uses the social URL fields to build dynamic external nav links.
+    """
+    row = db.execute(
+        select(OrgBusinessInfo).where(OrgBusinessInfo.org_id == org.id)
+    ).scalars().first()
+ 
+    if not row:
+        return {}   # no business info yet — return empty dict, not 404
+    
+    print("Org business info found:", row)  # debug log
+ 
+    return {
+        "business_type":   row.business_type,
+        "founded_year":    row.founded_year,
+        "company_size":    row.company_size,
+        "website":         row.website,
+        "address":         row.address,
+        "tagline":         row.tagline,
+        "description":     row.description,
+        "email_primary":   row.email_primary,
+        "email_support":   row.email_support,
+        "phone_primary":   row.phone_primary,
+        "phone_secondary": row.phone_secondary,
+        "whatsapp":        row.whatsapp,
+        "country":         row.country,
+        "city":            row.city,
+        "state_province":  row.state_province,
+        "postal_code":     row.postal_code,
+        "map_url":         row.map_url,
+        # Social URLs — used by sidebar quick links
+        "facebook_url":    row.facebook_url,
+        "instagram_url":   row.instagram_url,
+        "linkedin_url":    row.linkedin_url,
+        "twitter_url":     row.twitter_url,
+        "tiktok_url":      row.tiktok_url,
+        "youtube_url":     row.youtube_url,
+        "registration_no": row.registration_no,
+        "vat_number":      row.vat_number,
+    }
 
 # ── PATCH /organisations/me ───────────────────────────────────────────────────
 
@@ -209,12 +245,17 @@ def update_organisation(
     org:     Organisation = Depends(require_role("owner", "admin")),
     db:      Session      = Depends(get_db),
 ):
-    if payload.name:
+    if payload.name is not None:
         org.name = payload.name.strip()
-    if payload.slug:
+    if payload.slug is not None:
         org.slug = _ensure_unique_slug(db, _slugify(payload.slug), exclude_id=org.id)
+    if payload.logo_url is not None:
+        # Empty string clears the logo; any other string sets it
+        org.logo_url = payload.logo_url if payload.logo_url.strip() else None
+
     org.updated_at = datetime.now(timezone.utc)
     db.commit()
+    db.refresh(org)
     return {"ok": True, "organisation": org.to_dict()}
 
 
@@ -257,7 +298,6 @@ async def invite_member(
 
     email = payload.email.lower().strip()
 
-    # Check if already a registered user
     invitee = db.execute(
         select(User).where(User.email == email)
     ).scalars().first()
@@ -265,20 +305,18 @@ async def invite_member(
     newly_created = False
 
     if not invitee:
-        # ── Create the user on the spot (same as /register) ──────────────────
         temp_password = generate_temp_password(12)
         invitee = User(
             email=email,
-            first_name=email.split("@")[0],   # placeholder until they update profile
+            first_name=email.split("@")[0],
             last_name="",
             password_hash=hash_password(temp_password),
             is_email_verified=False,
         )
         db.add(invitee)
-        db.flush()   # get invitee.id before FK
+        db.flush()
 
-        # Verification token
-        token     = new_token()
+        token = new_token()
         t = EmailVerificationToken(
             user_id=invitee.id,
             token=hash_token(token),
@@ -287,11 +325,9 @@ async def invite_member(
         )
         db.add(t)
         newly_created = True
-
     else:
         token = None
 
-    # Check not already a member of this org
     existing = db.execute(
         select(OrganisationMember).where(
             OrganisationMember.org_id  == org.id,
@@ -302,7 +338,6 @@ async def invite_member(
     if existing:
         raise HTTPException(409, "User is already a member of this organisation")
 
-    # Add to org
     db.add(OrganisationMember(
         org_id=org.id,
         user_id=invitee.id,
@@ -311,19 +346,17 @@ async def invite_member(
     ))
     db.commit()
 
-    # ── Send email ────────────────────────────────────────────────────────────
     if newly_created:
         link = verify_link(token)
         await send_email(
             to=email,
-            subject=f"You've been invited to {org.name} on Relvō AI",
+            subject=f"You've been invited to {org.name} on NeuroFlow AI",
             html=f"""
             <div style="font-family: Arial, Helvetica, sans-serif; background:#f6f7fb; padding:32px;">
               <div style="max-width:560px; margin:0 auto; background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; padding:32px;">
                 <h2 style="margin:0 0 16px; color:#111827;">You've been invited to {org.name}</h2>
                 <p style="margin:0 0 16px; color:#374151; font-size:14px; line-height:1.6;">
                   <strong>{user.email}</strong> has added you to <strong>{org.name}</strong> as a <strong>{payload.role}</strong>.
-                  Click below to verify your email and get started.
                 </p>
                 <div style="margin:24px 0;">
                   <a href="{link}" style="display:inline-block; background:#6d28d9; color:#ffffff; text-decoration:none; padding:12px 18px; border-radius:10px; font-size:14px; font-weight:700;">
@@ -334,33 +367,22 @@ async def invite_member(
                 <div style="margin:0 0 18px; padding:12px 14px; background:#f3f4f6; border-radius:10px; font-size:14px; color:#111827; font-weight:700;">
                   {temp_password}
                 </div>
-                <p style="margin:18px 0 0; color:#9ca3af; font-size:12px;">
-                  If the button does not work:<br/>
-                  <a href="{link}" style="color:#6d28d9;">{link}</a>
-                </p>
               </div>
             </div>
             """,
         )
         message = f"{email} was registered and added to {org.name} as {payload.role}. Invite email sent."
     else:
-        # Existing user — just notify them
         await send_email(
             to=email,
-            subject=f"You've been added to {org.name} on Relvō AI",
+            subject=f"You've been added to {org.name} on NeuroFlow AI",
             html=f"""
             <div style="font-family: Arial, Helvetica, sans-serif; background:#f6f7fb; padding:32px;">
               <div style="max-width:560px; margin:0 auto; background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; padding:32px;">
                 <h2 style="margin:0 0 16px; color:#111827;">You've been added to {org.name}</h2>
                 <p style="margin:0 0 16px; color:#374151; font-size:14px; line-height:1.6;">
                   <strong>{user.email}</strong> has added you to <strong>{org.name}</strong> as a <strong>{payload.role}</strong>.
-                  Log in to Relvō to switch to this workspace.
                 </p>
-                <div style="margin:24px 0;">
-                  <a href="{verify_link('').rsplit('/', 1)[0].replace('/verify-email', '')}/auth/login" style="display:inline-block; background:#6d28d9; color:#ffffff; text-decoration:none; padding:12px 18px; border-radius:10px; font-size:14px; font-weight:700;">
-                    Go to Relvō
-                  </a>
-                </div>
               </div>
             </div>
             """,
@@ -433,10 +455,6 @@ def switch_organisation(
     db:     Session = Depends(get_db),
     user            = Depends(get_current_user),
 ):
-    """
-    Switch the active org for this session by updating the nf_org cookie.
-    No current org required — only a valid login session.
-    """
     oid = uuid.UUID(org_id)
 
     member = db.execute(
@@ -454,12 +472,11 @@ def switch_organisation(
         str(oid),
     )
 
+
 @router.delete("/me", status_code=204)
 def delete_organisation(
     org  = Depends(require_role("owner")),
     db:  Session = Depends(get_db),
 ):
-    # Delete all org data then the org itself
-    # CASCADE on FK handles most of it
     db.delete(org)
     db.commit()

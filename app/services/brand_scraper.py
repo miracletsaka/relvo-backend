@@ -420,7 +420,7 @@ async def scrape_brand(
     Example:
         result = await scrape_brand(
             website_url = "https://neuroflow.ai/whatsapp",
-            brand_name  = "Relvō WhatsApp",
+            brand_name  = "Relvo WhatsApp",
             brand_slug  = "neuroflow-whatsapp",
         )
     """
