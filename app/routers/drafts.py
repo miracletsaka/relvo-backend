@@ -93,35 +93,32 @@ def list_all_drafts(
 # 2) GET SINGLE DRAFT (SCOPED)
 # ---------------------------
 
-@router.get("/{draft_id}")
-def get_draft(
+@router.get("/{draft_id}/og")
+def get_draft_og(
     draft_id: str,
-    org: Organisation = Depends(get_current_org),
     db: Session = Depends(get_db),
 ):
+    """Public endpoint — returns only OG-safe fields for social media previews."""
     try:
         did = uuid.UUID(draft_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid draft id")
 
     draft = db.execute(
-        select(ContentDraft).where(
-            ContentDraft.id == did,
-            ContentDraft.org_id == org.id   # 🔒 enforce org
-        )
+        select(ContentDraft).where(ContentDraft.id == did)
     ).scalar_one_or_none()
 
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
 
-    chat = db.execute(
-        select(TopicChat).where(
-            TopicChat.id == draft.topic_chat_id,
-            TopicChat.org_id == org.id   # 🔒 enforce org
-        )
-    ).scalar_one_or_none()
-
-    return _draft_to_dict(draft, chat)
+    return {
+        "id": str(draft.id),
+        "title": draft.body_text[:80] if draft.body_text else "NeuroFlow AI",
+        "body_text": draft.body_text,
+        "thumbnail_url": draft.thumbnail_url,
+        "media_url": draft.media_url,
+        "media_urls": _parse_media_urls(draft.media_urls),
+    }
 
 
 # ---------------------------
