@@ -2,7 +2,6 @@ from pydantic import BaseModel
 from typing import Optional
 
 class BrandCreate(BaseModel):
-    id: str
     display_name: str
     is_active: bool = True
     logo_url:      Optional[str]  = None

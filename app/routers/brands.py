@@ -10,6 +10,7 @@ from app.models.topic_chat import TopicChat
 from app.models.content_draft import ContentDraft
 from app.dependencies.org import get_current_org, require_role
 from app.models.organisation import Organisation
+import uuid
 
 router = APIRouter(prefix="/brands", tags=["brands"])
 
@@ -33,21 +34,11 @@ def create_brand(
     org: Organisation = Depends(get_current_org),
     db: Session = Depends(get_db),
 ):
-    # Check uniqueness within this org only
-    existing = db.execute(
-        select(Brand).where(
-            Brand.id     == payload.id.strip(),
-            Brand.org_id == org.id,
-        )
-    ).scalars().first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Brand id already exists")
-
     brand = Brand(
-        id=payload.id.strip(),
+        id=str(uuid.uuid4()),
         display_name=payload.display_name.strip(),
         is_active=payload.is_active,
-        org_id=org.id,                # ← scoped to org
+        org_id=org.id,
         logo_url=payload.logo_url,
         primary_color=payload.primary_color,
     )
