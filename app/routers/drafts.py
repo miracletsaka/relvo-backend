@@ -113,7 +113,7 @@ def get_draft_og(
 
     return {
         "id": str(draft.id),
-        "title": draft.body_text[:80] if draft.body_text else "NeuroFlow AI",
+        "title": draft.body_text[:80] if draft.body_text else "Relvo",
         "body_text": draft.body_text,
         "thumbnail_url": draft.thumbnail_url,
         "media_url": draft.media_url,

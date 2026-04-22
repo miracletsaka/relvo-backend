@@ -350,7 +350,7 @@ async def invite_member(
         link = verify_link(token)
         await send_email(
             to=email,
-            subject=f"You've been invited to {org.name} on NeuroFlow AI",
+            subject=f"You've been invited to {org.name} on Relvo",
             html=f"""
             <div style="font-family: Arial, Helvetica, sans-serif; background:#f6f7fb; padding:32px;">
               <div style="max-width:560px; margin:0 auto; background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; padding:32px;">
@@ -375,7 +375,7 @@ async def invite_member(
     else:
         await send_email(
             to=email,
-            subject=f"You've been added to {org.name} on NeuroFlow AI",
+            subject=f"You've been added to {org.name} on Relvo",
             html=f"""
             <div style="font-family: Arial, Helvetica, sans-serif; background:#f6f7fb; padding:32px;">
               <div style="max-width:560px; margin:0 auto; background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; padding:32px;">

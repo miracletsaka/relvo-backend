@@ -19,6 +19,7 @@ Private (auth required):
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -52,8 +53,9 @@ def _hash_token(raw: str) -> str:
 def _new_token() -> str:
     return secrets.token_urlsafe(48)
 
-def _review_link(slug: str, token: str, base_url: str) -> str:
-    return f"{base_url}/business/{slug}/review/{token}"
+def _review_link(slug: str, token: str, base_url: str | None = None) -> str:
+    base = os.environ.get("FRONTEND_URL", "")
+    return f"{base}/business/{slug}/review/{token}"
 
 def _get_org(db: Session, slug: str) -> Organisation:
     org = db.execute(
