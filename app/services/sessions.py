@@ -47,9 +47,13 @@ def set_session_cookie(resp: Response, token: str, minutes: int = 60 * 24 * 7):
 
 
 def clear_session_cookie(resp: Response):
-    resp.delete_cookie(COOKIE_NAME, path="/")
-
-
+    is_prod = os.getenv("ENV") == "production"
+    resp.delete_cookie(
+        COOKIE_NAME,
+        path="/",
+        domain=".neuroflowai.co.uk" if is_prod else None,
+    )
+    
 # ── NEW: org cookie ───────────────────────────────────────────────────────────
 
 def set_org_cookie(resp: Response, org_id: str, minutes: int = 60 * 24 * 7):
@@ -72,4 +76,9 @@ def set_org_cookie(resp: Response, org_id: str, minutes: int = 60 * 24 * 7):
 
 
 def clear_org_cookie(resp: Response):
-    resp.delete_cookie(ORG_COOKIE_NAME, path="/")
+    is_prod = os.getenv("ENV") == "production"
+    resp.delete_cookie(
+        ORG_COOKIE_NAME,
+        path="/",
+        domain=".neuroflowai.co.uk" if is_prod else None,
+    )
