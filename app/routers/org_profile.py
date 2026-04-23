@@ -13,7 +13,8 @@ import uuid
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
+from app.services.sessions import set_onboarding_cookie
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -25,6 +26,7 @@ from app.models.org_profile import (
     OrgSponsor, OrgReview, OrgBusinessInfo,
     OrgCampaignGoal, OrgOffer, OrgAccreditation, OrgMetadata,
 )
+from app.services.business_info_enricher import enrich_business_profile_with_gpt
 
 router = APIRouter(prefix="/org-profile", tags=["org-profile"])
 
@@ -104,7 +106,7 @@ class BusinessInfoIn(BaseModel):
     twitter_url:     Optional[str] = None
     tiktok_url:      Optional[str] = None
     youtube_url:     Optional[str] = None
-
+    auto_enrich: Optional[bool] = False
 
 class GoalIn(BaseModel):
     label:     str
@@ -277,20 +279,55 @@ def get_business_info(
     return row.to_dict() if row else {}
 
 
+def _apply_patch(row: OrgBusinessInfo, payload: BusinessInfoIn):
+    data = payload.model_dump(exclude_unset=True)
+    data.pop("auto_enrich", None)
+
+    for key, value in data.items():
+        setattr(row, key, value)
+
+
 @router.put("/business-info")
-def upsert_business_info(
+async def upsert_business_info(
     payload: BusinessInfoIn,
+    response: Response,
     org: Organisation = Depends(require_role("owner", "admin")),
-    db:  Session      = Depends(get_db),
+    db: Session = Depends(get_db),
 ):
     row = db.execute(
         select(OrgBusinessInfo).where(OrgBusinessInfo.org_id == org.id)
     ).scalars().first()
+
     if not row:
         row = OrgBusinessInfo(id=uuid.uuid4(), org_id=org.id)
         db.add(row)
+
+    # auto-enrich description/tagline before saving
+    if payload.auto_enrich and payload.website:
+        enriched = await enrich_business_profile_with_gpt(
+            org_name=getattr(org, "name", "") or "",
+            website=payload.website,
+            tagline=payload.tagline,
+            description=payload.description,
+            business_type=payload.business_type,
+            company_size=payload.company_size,
+            founded_year=payload.founded_year,
+        )
+
+        if enriched.get("description"):
+            payload.description = enriched["description"]
+
+        if enriched.get("tagline"):
+            payload.tagline = enriched["tagline"]
+
     _apply_patch(row, payload)
-    db.commit(); db.refresh(row)
+    db.commit()
+    db.refresh(row)
+
+    # org + business info are now saved successfully
+    # next step should resume at branding
+    set_onboarding_cookie(response, "branding")
+
     return row.to_dict()
 
 

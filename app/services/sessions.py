@@ -1,27 +1,13 @@
-"""
-Patch for app/utils/sessions.py
-────────────────────────────────
-Add set_org_cookie() and clear_org_cookie() alongside your existing
-set_session_cookie() and clear_session_cookie().
-
-FastAPI sets the nf_org cookie at two points:
-  1. Login  — if the user already belongs to an org
-  2. POST /organisations — when they create their first org
-
-The proxy reads nf_org to know whether to redirect to /onboarding.
-No DB or API call needed in the proxy — just a cookie read.
-"""
-
 import hashlib
 import os
 import secrets
-from datetime import timedelta
 from fastapi import Response
 
 from .tokens import utcnow
 
-COOKIE_NAME     = "nf_session"
-ORG_COOKIE_NAME = "nf_org"        # ← NEW
+COOKIE_NAME = "nf_session"
+ORG_COOKIE_NAME = "nf_org"
+ONBOARDING_COOKIE_NAME = "nf_onboarding"
 
 
 def new_session_token() -> str:
@@ -53,20 +39,21 @@ def clear_session_cookie(resp: Response):
         path="/",
         domain=".neuroflowai.co.uk" if is_prod else None,
     )
-    
-# ── NEW: org cookie ───────────────────────────────────────────────────────────
+
+
+# ── org cookie ────────────────────────────────────────────────────────────────
 
 def set_org_cookie(resp: Response, org_id: str, minutes: int = 60 * 24 * 7):
     """
     Set the nf_org cookie so the Next.js proxy can read it without
     making an API call. NOT httponly — proxy needs to read it.
-    Value is just the org UUID (not sensitive — org_id is not a secret).
+    Value is just the org UUID (not sensitive).
     """
     is_prod = os.getenv("ENV") == "production"
     resp.set_cookie(
         key=ORG_COOKIE_NAME,
         value=str(org_id),
-        httponly=False,      # proxy reads this — must NOT be httponly
+        httponly=False,
         secure=is_prod,
         samesite="lax",
         domain=".neuroflowai.co.uk" if is_prod else None,
@@ -79,6 +66,36 @@ def clear_org_cookie(resp: Response):
     is_prod = os.getenv("ENV") == "production"
     resp.delete_cookie(
         ORG_COOKIE_NAME,
+        path="/",
+        domain=".neuroflowai.co.uk" if is_prod else None,
+    )
+
+
+# ── onboarding cookie ─────────────────────────────────────────────────────────
+
+def set_onboarding_cookie(resp: Response, stage: str, minutes: int = 60 * 24 * 7):
+    """
+    Possible values:
+      - branding  -> org + business info saved, resume at branding
+      - complete  -> onboarding finished, allow internal app access
+    """
+    is_prod = os.getenv("ENV") == "production"
+    resp.set_cookie(
+        key=ONBOARDING_COOKIE_NAME,
+        value=stage,
+        httponly=False,   # proxy must read it
+        secure=is_prod,
+        samesite="lax",
+        domain=".neuroflowai.co.uk" if is_prod else None,
+        max_age=minutes * 60,
+        path="/",
+    )
+
+
+def clear_onboarding_cookie(resp: Response):
+    is_prod = os.getenv("ENV") == "production"
+    resp.delete_cookie(
+        ONBOARDING_COOKIE_NAME,
         path="/",
         domain=".neuroflowai.co.uk" if is_prod else None,
     )

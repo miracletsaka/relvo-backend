@@ -533,3 +533,43 @@ def list_review_requests(
         .order_by(ReviewRequest.sent_at.desc())
     ).scalars().all()
     return [r.to_dict() for r in rows]
+
+@router.get("/public/review/{review_id}/og")
+def get_review_og(
+    review_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Returns OG metadata for a review card share page.
+    No auth — fully public. Called by Next.js generateMetadata() server-side.
+    """
+    try:
+        uid = uuid.UUID(review_id)
+    except ValueError:
+        raise HTTPException(404, "Review not found")
+ 
+    review = db.execute(
+        select(OrgReview).where(OrgReview.id == uid)
+    ).scalars().first()
+ 
+    if not review:
+        raise HTTPException(404, "Review not found")
+ 
+    # Get the org for name and slug
+    org = db.execute(
+        select(Organisation).where(Organisation.id == review.org_id)
+    ).scalars().first()
+ 
+    if not org:
+        raise HTTPException(404, "Organisation not found")
+ 
+    return {
+        "id":             str(review.id),
+        "author_name":    review.author_name,
+        "rating":         review.rating,
+        "body":           review.body,
+        "card_image_url": review.card_image_url,   # the generated portrait review card
+        "is_verified":    review.is_verified,
+        "org_name":       org.name,
+        "org_slug":       org.slug,
+    }
