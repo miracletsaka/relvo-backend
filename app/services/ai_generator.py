@@ -264,7 +264,7 @@ CONTENT_ANGLES = [
 def _angle_example(angle: str) -> str:
     examples = {
         "benefit_led":       "ANGLE: Benefit Led\nLead with the biggest positive outcome. Make the result obvious fast. Then support with 2-3 concrete points and a CTA.",
-        "problem_solution":  "ANGLE: Problem → Solution\nOpen with a pain, frustration, or missed opportunity. Then present the solution clearly. Keep it direct and useful.",
+        "problem_solution":  "ANGLE: Problem → Reality → Solution\nStart with a real-life situation, not a generic problem.Make it feel like something the reader experiences daily.",
         "trust_led":         "ANGLE: Trust Led\nLead with proof, confidence, professionalism, or credibility. Use this when reassurance matters.",
         "educational":       "ANGLE: Educational\nTeach or explain something useful. Structure the message so it feels valuable even before the CTA.",
         "offer_led":         "ANGLE: Offer Led\nLead with the offer, deal, opportunity, or headline incentive. Useful for promotional or conversion content.",
@@ -346,15 +346,49 @@ PLATFORM + TONE + ANGLE
 {org_block}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-WRITING RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-* Clear, modern, human writing
-* Use simple, strong English
-* Keep the structured fields concise and graphic-friendly
-* full_caption should feel natural for the selected tone and platform
-* Avoid sounding generic or robotic
-* Do not force hype when the tone is informational
-* Do not force educational copy when the tone is promotional
+ADVANCED CAPTION RULES (CRITICAL)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+* Do NOT start every caption with a question
+* Vary opening styles:
+  - statement
+  - insight
+  - bold claim
+  - relatable situation
+  - short story
+  - direct observation
+* Avoid generic phrases:
+  - "scale faster"
+  - "unlock potential"
+  - "increase efficiency"
+  - "seamless solutions"
+* Write like a real human speaking to a specific person
+* Make it feel like a real situation, not marketing copy
+* If it sounds like a template, rewrite it
+* Always speak to a specific audience from BRAND CONTEXT
+* Make the reader feel "this is for me"
+* full_caption must NOT repeat hook/subheading word-for-word
+* It should expand the idea in a natural flow
+* It should feel like a conversation, not a list
+
+FIXED STYLE ON FULL_CAPTION FIELD:
+Most businesses dont realise how much time they lose on small, repetitive work.
+
+Chasing follow-ups.
+Updating systems.
+Replying late to customers.
+
+It doesnt feel like a big problem — until it starts slowing everything down.
+
+Thats where automation changes things.
+
+Instead of doing more, you remove the work that shouldn’t be manual in the first place.
+
+NeuroFlow AI helps you build that system.
+
+Less chasing. More control. Better flow.
+
+If you're serious about growing without burning time, it's worth a closer look.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STRUCTURED FIELD RULES

@@ -56,17 +56,25 @@ def update_brand(
 ):
     brand = db.execute(
         select(Brand).where(
-            Brand.id     == brand_id,
-            Brand.org_id == org.id,           # ← must belong to this org
+            Brand.id == brand_id,
+            Brand.org_id == org.id,
         )
     ).scalars().first()
+
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found")
 
     if payload.display_name is not None:
         brand.display_name = payload.display_name.strip()
+
     if payload.is_active is not None:
         brand.is_active = payload.is_active
+
+    if payload.logo_url is not None:
+        brand.logo_url = payload.logo_url.strip() if payload.logo_url else None
+
+    if payload.primary_color is not None:
+        brand.primary_color = payload.primary_color.strip() if payload.primary_color else "#7c3aed"
 
     db.commit()
     db.refresh(brand)

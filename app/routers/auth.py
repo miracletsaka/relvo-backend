@@ -3,6 +3,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session as DbSession
 from datetime import timedelta, datetime, timezone
 from sqlalchemy import select
+from typing import Optional
 
 from app.database import get_db
 from app.models.user import User
@@ -24,7 +25,6 @@ from app.services.sessions import (
 )
 from app.dependencies.org import get_current_org
 from app.services.authz import get_current_user
-from typing import Optional
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -88,8 +88,12 @@ def _get_current_session(
     return sess
 
 
-def _get_current_user_from_session(req: Request, db: DbSession) -> tuple[UserSession, User]:
-    sess = _get_current_session(req, db)
+def _get_current_user_from_session(
+    req: Request,
+    resp: Response,
+    db: DbSession,
+) -> tuple[UserSession, User]:
+    sess = _get_current_session(req, resp, db)
 
     user = db.query(User).filter(User.id == sess.user_id).first()
     if not user or not user.is_active:
@@ -249,11 +253,9 @@ def login(payload: LoginIn, req: Request, resp: Response, db: DbSession = Depend
 
     set_session_cookie(resp, st)
 
-    # If user belongs to an org, set nf_org too
     membership = (
         db.query(OrganisationMember)
         .filter(OrganisationMember.user_id == user.id)
-        # .order_by(OrganisationMember.created_at.asc())
         .first()
     )
     if membership:
@@ -363,8 +365,13 @@ def password_reset_confirm(payload: ResetConfirmIn, db: DbSession = Depends(get_
 
 
 @router.post("/change-password")
-def change_password(payload: ChangePasswordIn, req: Request, db: DbSession = Depends(get_db)):
-    sess, user = _get_current_user_from_session(req, db)
+def change_password(
+    payload: ChangePasswordIn,
+    req: Request,
+    resp: Response,
+    db: DbSession = Depends(get_db),
+):
+    sess, user = _get_current_user_from_session(req, resp, db)
 
     if not verify_password(payload.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
@@ -386,24 +393,14 @@ def change_password(payload: ChangePasswordIn, req: Request, db: DbSession = Dep
 
 @router.delete("/me", status_code=204)
 def delete_my_account(req: Request, resp: Response, db: DbSession = Depends(get_db)):
-    """
-    Delete the currently authenticated user's own account.
-    Also clears all sessions and cookies.
-    """
-    sess, user = _get_current_user_from_session(req, db)
+    sess, user = _get_current_user_from_session(req, resp, db)
     user_id = user.id
 
-    # Revoke/delete sessions
     db.query(UserSession).filter(UserSession.user_id == user_id).delete()
-
-    # Delete tokens
     db.query(EmailVerificationToken).filter(EmailVerificationToken.user_id == user_id).delete()
     db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user_id).delete()
-
-    # Delete memberships
     db.query(OrganisationMember).filter(OrganisationMember.user_id == user_id).delete()
 
-    # Delete user
     db.delete(user)
     db.commit()
 
@@ -413,46 +410,24 @@ def delete_my_account(req: Request, resp: Response, db: DbSession = Depends(get_
 
 
 @router.delete("/users/{user_id}", status_code=204)
-def delete_user(user_id: str, req: Request,resp: Response, db: DbSession = Depends(get_db)):
-    """
-    Admin-style delete of another user.
-    Prevents self-deletion here; self-deletion is handled by DELETE /auth/me.
-    """
-    sess = _get_current_session(req, db)
+def delete_user(user_id: str, req: Request, resp: Response, db: DbSession = Depends(get_db)):
+    sess = _get_current_session(req, resp, db)
 
     if str(sess.user_id) == str(user_id):
-        sess, user = _get_current_user_from_session(req, db)
+        _, user = _get_current_user_from_session(req, resp, db)
         user_id = user.id
 
-        # Revoke/delete sessions
         db.query(UserSession).filter(UserSession.user_id == user_id).delete()
-
-        # Delete tokens
         db.query(EmailVerificationToken).filter(EmailVerificationToken.user_id == user_id).delete()
         db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user_id).delete()
-
-        # Delete memberships
         db.query(OrganisationMember).filter(OrganisationMember.user_id == user_id).delete()
 
-        # Delete user
         db.delete(user)
         db.commit()
 
-        raw = req.cookies.get(COOKIE_NAME)
-        if raw:
-            sh = hash_session_token(raw)
-            sess = (
-                db.query(UserSession)
-                .filter(UserSession.session_token == sh, UserSession.revoked_at.is_(None))
-                .first()
-            )
-            if sess:
-                sess.revoked_at = utcnow()
-                db.commit()
-
-            clear_session_cookie(resp)
-            clear_org_cookie(resp)
-            return Response(status_code=204)
+        clear_session_cookie(resp)
+        clear_org_cookie(resp)
+        return Response(status_code=204)
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -467,6 +442,7 @@ def delete_user(user_id: str, req: Request,resp: Response, db: DbSession = Depen
     db.commit()
     return Response(status_code=204)
 
+
 @router.get("/validate-session")
-def validate_session(user = Depends(get_current_user)):
+def validate_session(user=Depends(get_current_user)):
     return {"ok": True}
