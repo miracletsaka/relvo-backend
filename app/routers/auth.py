@@ -54,19 +54,35 @@ class ChangePasswordIn(BaseModel):
     new_password: str = Field(min_length=8)
 
 
-def _get_current_session(req: Request, db: DbSession) -> UserSession:
+def _get_current_session(
+    req: Request,
+    resp: Response,
+    db: DbSession,
+) -> UserSession:
     raw = req.cookies.get(COOKIE_NAME)
+
     if not raw:
+        clear_session_cookie(resp)
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     sh = hash_session_token(raw)
+
     sess = (
         db.query(UserSession)
-        .filter(UserSession.session_token == sh, UserSession.revoked_at.is_(None))
+        .filter(
+            UserSession.session_token == sh,
+            UserSession.revoked_at.is_(None),
+        )
         .first()
     )
 
     if not sess or sess.expires_at < utcnow():
+        clear_session_cookie(resp)
+
+        if sess and sess.revoked_at is None:
+            sess.revoked_at = utcnow()
+            db.commit()
+
         raise HTTPException(status_code=401, detail="Session expired")
 
     return sess
@@ -450,3 +466,7 @@ def delete_user(user_id: str, req: Request,resp: Response, db: DbSession = Depen
     db.delete(user)
     db.commit()
     return Response(status_code=204)
+
+@router.get("/validate-session")
+def validate_session(user = Depends(get_current_user)):
+    return {"ok": True}

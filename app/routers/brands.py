@@ -21,7 +21,6 @@ def list_brands(
     org: Organisation = Depends(get_current_org),
     db: Session = Depends(get_db),
 ):
-    print(f"Listing brands for org {org} and org {org.id} role of (active_only={active_only})")
     q = select(Brand).where(Brand.org_id == org.id)
     if active_only:
         q = q.where(Brand.is_active == True)  # noqa
