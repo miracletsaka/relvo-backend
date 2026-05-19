@@ -208,47 +208,37 @@ def _compute_schedule_slots(
 # are still present so the AI can write FALLBACK values when no real org data
 # exists. When org data IS available, these get overwritten by org_data_loader.
 # ─────────────────────────────────────────────────────────────────────────────
-class PostOutput(BaseModel):
-    hook:          str
-    subheading:    str
-    bullets:       List[str]
-    proof:         str
-    cta:           str
-    full_caption:  str
-    hashtags:      List[str]
-    scheduled_at:  str
-    image_prompt:  Optional[str] = None
-    video_concept: Optional[str] = None
+class CampaignCopyOutput(BaseModel):
+    # ── Core campaign copy ─────────────────────────────────────────────
+    headline:       str
+    subheadline:    str
+    product_name:   str
+    description:    str
 
-    # Template layout helpers
-    hook_tag:    Optional[str] = ""
-    hook_pre:    Optional[str] = ""
-    hook_number: Optional[str] = ""
-    hook_label:  Optional[str] = ""
-    hook_desc:   Optional[str] = ""
+    feature_1:      str
+    feature_2:      str
+    feature_3:      str
 
-    bullet_1: Optional[str] = ""
-    bullet_2: Optional[str] = ""
-    bullet_3: Optional[str] = ""
+    cta_text:       str
 
-    price_label:  Optional[str] = ""
-    fine_print:   Optional[str] = ""
-    enroll_note:  Optional[str] = ""
-    badge_icon:   Optional[str] = ""
-    deco_icon:    Optional[str] = ""
+    full_caption:   str
+    hashtags:       List[str]
+    scheduled_at:   str
 
-    # ── Fallback fields — AI writes these ONLY when no real org data exists ──
-    # These will be overwritten by org_data_loader when real data is present.
-    offer_title:  Optional[str] = ""
-    offer_cta:    Optional[str] = ""
+    image_prompt:   Optional[str] = None
+    video_concept:  Optional[str] = None
 
-    review_text:   Optional[str] = ""
-    review_author: Optional[str] = ""
+    # ── Optional campaign labels ──────────────────────────────────────
+    campaign_label:  Optional[str] = ""
+    collection_label: Optional[str] = ""
+    footer_label:    Optional[str] = ""
 
-    business_tagline:     Optional[str] = ""
-    business_description: Optional[str] = ""
-    business_type:        Optional[str] = ""
-    business_website:     Optional[str] = ""
+    # ── Optional offer copy ───────────────────────────────────────────
+    offer_value:    Optional[str] = ""
+    offer_label:    Optional[str] = ""
+
+    # ── Optional helper labels ────────────────────────────────────────
+    proof:          Optional[str] = ""
 
 
 CONTENT_ANGLES = [
@@ -509,23 +499,15 @@ CRITICAL:
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_message},
         ],
-        response_format=PostOutput,
+        response_format=CampaignCopyOutput,
         temperature=0.8,
     )
 
-    data: PostOutput = resp.choices[0].message.parsed
+    data: CampaignCopyOutput = resp.choices[0].message.parsed
     if data is None:
         raise ValueError(f"Model refused to generate: {resp.choices[0].message.refusal}")
 
     full_caption = strip_markdown(data.full_caption or "")
-    hook         = strip_markdown(data.hook or "")
-    subheading   = strip_markdown(data.subheading or "")
-    proof        = strip_markdown(data.proof or "")
-    cta          = strip_markdown(data.cta or "")
-
-    bullets = [strip_markdown(str(b).strip()) for b in (data.bullets or []) if str(b).strip()][:3]
-    while len(bullets) < 3:
-        bullets.append("")
 
     hashtags_list = [str(h).strip() for h in (data.hashtags or []) if str(h).strip()]
     hashtags      = " ".join(hashtags_list).strip()
@@ -533,58 +515,36 @@ CRITICAL:
 
     # ── Build structured output from AI ──────────────────────────────────────
     structured = {
-        # Core copy — always from AI
-        "hook":        hook,
-        "subheading":  subheading,
-        "bullets":     bullets,
-        "proof":       proof,
-        "cta":         cta,
-        "hashtags":    hashtags_list,
-        "scheduled_at": final_slot,
-        "image_prompt":  data.image_prompt or "",
-        "video_concept": data.video_concept or "",
+    # ── Core campaign copy ─────────────────────────────────────
+    "headline":       strip_markdown(data.headline or ""),
+    "subheadline":    strip_markdown(data.subheadline or ""),
+    "product_name":   strip_markdown(data.product_name or ""),
+    "description":    strip_markdown(data.description or ""),
 
-        # Template layout helpers — from AI
-        "hook_tag":    strip_markdown(data.hook_tag or ""),
-        "hook_pre":    strip_markdown(data.hook_pre or ""),
-        "hook_number": strip_markdown(data.hook_number or ""),
-        "hook_label":  strip_markdown(data.hook_label or ""),
-        "hook_desc":   strip_markdown(data.hook_desc or ""),
+    "feature_1":      strip_markdown(data.feature_1 or ""),
+    "feature_2":      strip_markdown(data.feature_2 or ""),
+    "feature_3":      strip_markdown(data.feature_3 or ""),
 
-        "bullet_1": strip_markdown(data.bullet_1 or bullets[0] if bullets else ""),
-        "bullet_2": strip_markdown(data.bullet_2 or bullets[1] if len(bullets) > 1 else ""),
-        "bullet_3": strip_markdown(data.bullet_3 or bullets[2] if len(bullets) > 2 else ""),
+    "cta_text":       strip_markdown(data.cta_text or ""),
 
-        "price_label": strip_markdown(data.price_label or ""),
-        "fine_print":  strip_markdown(data.fine_print or ""),
-        "enroll_note": strip_markdown(data.enroll_note or ""),
-        "badge_icon":  strip_markdown(data.badge_icon or ""),
-        "deco_icon":   strip_markdown(data.deco_icon or ""),
+    "campaign_label": strip_markdown(data.campaign_label or ""),
+    "collection_label": strip_markdown(data.collection_label or ""),
+    "footer_label":   strip_markdown(data.footer_label or ""),
 
-        # Tone metadata
-        "tone_name":  tone_name  or "",
-        "tone_label": tone_label or "",
+    "offer_value":    strip_markdown(data.offer_value or ""),
+    "offer_label":    strip_markdown(data.offer_label or ""),
 
-        # ── AI FALLBACK values (overwritten below if real org data exists) ──
-        "offer_title":  strip_markdown(data.offer_title or ""),
-        "offer_cta":    strip_markdown(data.offer_cta or ""),
+    "proof":          strip_markdown(data.proof or ""),
 
-        "review_text":   strip_markdown(data.review_text or ""),
-        "review_author": strip_markdown(data.review_author or ""),
+    # ── Metadata ───────────────────────────────────────────────
+    "hashtags":       hashtags_list,
+    "scheduled_at":   final_slot,
+    "image_prompt":   data.image_prompt or "",
+    "video_concept":  data.video_concept or "",
 
-        "business_tagline":     strip_markdown(data.business_tagline or ""),
-        "business_description": strip_markdown(data.business_description or ""),
-        "business_type":        strip_markdown(data.business_type or ""),
-        "business_website":     strip_markdown(data.business_website or ""),
-
-        # Arrays default to empty — overwritten by real data below
-        "sponsors":       [],
-        "accreditations": [],
-        "reviews":        [],
-        "offers":         [],
-        "metadata":       [],
-        "campaign_goals": [],
-    }
+    "tone_name":      tone_name or "",
+    "tone_label":     tone_label or "",
+}
 
     # ── Merge real org data (overwrites AI fallbacks) ─────────────────────────
     # This is the key step: real DB data always wins over AI-generated values.

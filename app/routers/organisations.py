@@ -157,6 +157,28 @@ def list_my_organisations(
     ]
 
 
+# ── GET /organisations/current ────────────────────────────────────────────────
+
+@router.get("/current")
+def get_current_organisation_light(
+    org: Organisation = Depends(get_current_org),
+):
+    """
+    Lightweight current-org endpoint.
+
+    Reads the active org from nf_org through get_current_org.
+    This prevents onboarding from blindly selecting orgs[0].
+    """
+    return {
+        "id": str(org.id),
+        "name": org.name,
+        "slug": getattr(org, "slug", None),
+        "role": getattr(org, "_current_role", "member"),
+        "logo_url": getattr(org, "logo_url", None),
+        "is_active": getattr(org, "is_active", True),
+    }
+
+
 # ── GET /organisations/me ─────────────────────────────────────────────────────
 
 @router.get("/me")
@@ -480,3 +502,31 @@ def delete_organisation(
 ):
     db.delete(org)
     db.commit()
+
+# ── GET /organisations/onboarding-status ──────────────────────────────────────
+
+@router.get("/onboarding-status")
+def get_onboarding_status(
+    org: Organisation = Depends(get_current_org),
+    db: Session = Depends(get_db),
+):
+    brands = db.execute(
+        select(Brand).where(
+            Brand.org_id == org.id,
+            Brand.is_active == True,  # noqa: E712
+        )
+    ).scalars().all()
+
+    missing = []
+
+    if not brands:
+        missing.append("brand")
+
+    # Later we can add segment checks here too.
+    # For now, brand existence decides whether onboarding should continue.
+
+    return {
+        "org_id": str(org.id),
+        "complete": len(missing) == 0,
+        "missing": missing,
+    }

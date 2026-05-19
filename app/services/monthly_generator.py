@@ -139,8 +139,9 @@ def generate_monthly_drafts(
     brand_id: str,
     tone_id: str | None = None,
     topic: str,
-    target_month: str,
-    posts_per_week: int,
+    mode: str = "monthly",
+    target_month: str | None = None,
+    posts_per_week: int = 1,
     brand_profile_summary: str | None = None,
     brand_profile_json: dict | None = None,
     tone_name: str | None = None,
@@ -157,10 +158,13 @@ def generate_monthly_drafts(
     except (ZoneInfoNotFoundError, Exception):
         tz = ZoneInfo("Europe/London")
 
+    single_mode = (mode or "").strip().lower() == "single"
+
     # ── 2) Parse target month ─────────────────────────────────────────────────
     try:
-        year  = int(target_month[:4])
-        month = int(target_month[5:7])
+        target_month_safe = target_month or ""
+        year  = int(target_month_safe[:4])
+        month = int(target_month_safe[5:7])
     except Exception:
         now_local = datetime.now(tz)
         year, month = now_local.year, now_local.month
@@ -208,6 +212,12 @@ def generate_monthly_drafts(
 
         platforms = [facebook]
 
+    if single_mode:
+        # AI-chat demo: generate exactly one draft only.
+        # Prefer Instagram when available because this flow previews one visual poster.
+        preferred = next((p for p in platforms if str(p.id).lower() == "instagram"), None)
+        platforms = [preferred or platforms[0]]
+
     platform_offsets = _build_platform_day_offsets(platforms)
     print(f"[generate_monthly_drafts] Platform day offsets: {platform_offsets}")
 
@@ -228,24 +238,29 @@ def generate_monthly_drafts(
     for platform in platforms:
         plat_id = platform.id
 
-        n_posts = _posts_for_platform(year, month, now_utc, tz, posts_per_week)
-        if n_posts == 0:
-            platform_summary.append({
-                "platform": plat_id, "posts": 0,
-                "reason": "No remaining time in month",
-            })
-            continue
+        if single_mode:
+            n_posts = 1
+            base_slot = now_utc + timedelta(hours=1)
+            slots = [base_slot.replace(second=0, microsecond=0).isoformat().replace("+00:00", "Z")]
+        else:
+            n_posts = _posts_for_platform(year, month, now_utc, tz, posts_per_week)
+            if n_posts == 0:
+                platform_summary.append({
+                    "platform": plat_id, "posts": 0,
+                    "reason": "No remaining time in month",
+                })
+                continue
 
-        slots = _compute_slots_for_platform(
-            year=year,
-            month=month,
-            now_utc=now_utc,
-            tz=tz,
-            posting_hour_local=posting_hour_local,
-            platform_id=plat_id,
-            n_posts=n_posts,
-            platform_offsets=platform_offsets,
-        )
+            slots = _compute_slots_for_platform(
+                year=year,
+                month=month,
+                now_utc=now_utc,
+                tz=tz,
+                posting_hour_local=posting_hour_local,
+                platform_id=plat_id,
+                n_posts=n_posts,
+                platform_offsets=platform_offsets,
+            )
 
         print(f"[generate_monthly_drafts] Platform={plat_id} n_posts={n_posts} slots={slots}")
 
@@ -266,8 +281,8 @@ def generate_monthly_drafts(
                     brand_id=brand_id,
                     brand_profile_summary=brand_profile_summary,
                     brand_profile_json=brand_profile_json,
-                    target_month=target_month,
-                    posts_per_week=posts_per_week,
+                    target_month=target_month or f"{year}-{str(month).zfill(2)}",
+                    posts_per_week=posts_per_week or 1,
                     client_now_utc_iso=client_now,
                     timezone=timezone,
                     posting_hour_local=posting_hour_local,
@@ -355,5 +370,5 @@ def generate_monthly_drafts(
         "generated":       total_generated,
         "failed":          total_failed,
         "platforms":       platform_summary,
-        "weeks_remaining": round(_remaining_weeks_in_month(year, month, now_utc, tz), 2),
+        "weeks_remaining": 0 if single_mode else round(_remaining_weeks_in_month(year, month, now_utc, tz), 2),
     }

@@ -24,8 +24,9 @@ router = APIRouter(prefix="/topic-chats", tags=["topic-chats"])
 class TopicChatPreviewRequest(BaseModel):
     brand_id: str
     topic: str
-    target_month: str  # "YYYY-MM"
-    posts_per_week: int
+    mode: str | None = "monthly"
+    target_month: str | None = None  # "YYYY-MM"
+    posts_per_week: int | None = 1
 
 class TopicChatBackgroundUpdate(BaseModel):
     background_images: List[str]
@@ -39,8 +40,22 @@ class TopicChatCreateRequest(TopicChatPreviewRequest):
 
 @router.post("/preview")
 def preview_count(payload: TopicChatPreviewRequest):
-    n = posts_in_month(payload.target_month, payload.posts_per_week)
+    if payload.mode == "single":
+        return {"will_generate": 1}
+
+    if not payload.target_month:
+        raise HTTPException(status_code=422, detail="target_month is required unless mode='single'")
+
+    n = posts_in_month(payload.target_month, payload.posts_per_week or 1)
     return {"will_generate": n}
+
+
+def _resolve_target_month(payload: TopicChatCreateRequest) -> str:
+    if payload.target_month:
+        return payload.target_month
+
+    now = datetime.now(timezone.utc)
+    return f"{now.year}-{str(now.month).zfill(2)}"
 
 
 # ── Background generation thread ──────────────────────────────────────────────
@@ -51,8 +66,9 @@ def _run_generation_in_background(
     brand_id: str,
     tone_id: str | None,
     topic: str,
-    target_month: str,
-    posts_per_week: int,
+    mode: str | None,
+    target_month: str | None,
+    posts_per_week: int | None,
     brand_profile_summary: str | None,
     brand_profile_json: dict | None,
     tone_name: str | None,
@@ -72,8 +88,9 @@ def _run_generation_in_background(
             brand_id=brand_id,
             tone_id=tone_id,
             topic=topic,
+            mode=mode or "monthly",
             target_month=target_month,
-            posts_per_week=posts_per_week,
+            posts_per_week=posts_per_week or 1,
             brand_profile_summary=brand_profile_summary,
             brand_profile_json=brand_profile_json,
             tone_name=tone_name,
@@ -117,6 +134,12 @@ def create_topic_chat_and_generate(
 ):
     chat_id = uuid.uuid4()
     now     = datetime.now(timezone.utc)
+    mode    = payload.mode or "monthly"
+
+    # target_month is optional for AI-chat single generation.
+    # Keep a harmless current-month value in the chat row for old UI compatibility.
+    resolved_target_month = _resolve_target_month(payload)
+    resolved_posts_per_week = 1 if mode == "single" else (payload.posts_per_week or 1)
 
     chat = TopicChat(
         id=chat_id,
@@ -124,8 +147,8 @@ def create_topic_chat_and_generate(
         tone_id=payload.tone_id,
         org_id=org.id,
         topic=payload.topic,
-        target_month=payload.target_month,
-        posts_per_week=payload.posts_per_week,
+        target_month=resolved_target_month,
+        posts_per_week=resolved_posts_per_week,
         generation_status="processing",
         created_at=now,
         updated_at=now,
@@ -177,8 +200,9 @@ def create_topic_chat_and_generate(
             payload.brand_id,
             payload.tone_id,
             payload.topic,
-            payload.target_month,
-            payload.posts_per_week,
+            mode,
+            resolved_target_month,
+            resolved_posts_per_week,
             brand_profile_summary,
             brand_profile_json,
             tone_name,

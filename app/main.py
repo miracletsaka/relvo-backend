@@ -28,7 +28,11 @@ from app.routers import content_drafts
 from app.routers import templates
 from app.routers import media_assets_backend
 from app.routers import billing
-
+from app.routers import segments
+from app.routers.template_segments import router as template_segments_router
+from app.routers.ai_chat import router as ai_chat_router
+from app.routers import public_ai_chat
+from app.routers import google_oauth, google_docs
 # Create FastAPI app FIRST
 app = FastAPI(title="AI Marketing System")
 # Enable CORS (required for Next.js frontend)
@@ -53,6 +57,7 @@ app.include_router(content_router)
 app.include_router(approvals_router)
 app.include_router(generation_router)
 app.include_router(brands.router)
+app.include_router(segments.router)
 app.include_router(organisations.router)
 app.include_router(platforms.router)
 app.include_router(stats.router)
@@ -76,6 +81,11 @@ app.include_router(content_drafts.router)
 app.include_router(templates.router)
 app.include_router(media_assets_backend.router)
 app.include_router(billing.router)
+app.include_router(template_segments_router)
+app.include_router(ai_chat_router)
+app.include_router(public_ai_chat.router)
+app.include_router(google_oauth.router)
+app.include_router(google_docs.router)
 # Health check
 @app.get("/")
 def health_check():
