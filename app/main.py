@@ -43,7 +43,7 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:3001",
         "http://127.0.0.1:3000",
-        "https://us2.make.com",
+        "https://relvo-black.vercel.app",
         "https://app.neuroflowai.co.uk",
         "https://neuroflowai.co.uk",
         "https://api.neuroflowai.co.uk",
