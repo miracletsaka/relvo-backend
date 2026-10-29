@@ -1,25 +1,32 @@
+"""
+backend/app/routers/ai_chat.py
+
+AI chat router. All model calls go through app.ai.model_client (Meta Model API).
+"""
 import json
-import os
 from datetime import datetime, timezone
 from uuid import UUID
-from app.ai.app_links import APP_LINKS_CONTEXT
+
 from fastapi import APIRouter, Depends, HTTPException
-from openai import OpenAI
 from pydantic import BaseModel
 from sqlalchemy import desc, text
 from sqlalchemy.orm import Session
-from app.services.google_connection import get_drive_service, get_docs_service
+
+from app.ai.app_links import APP_LINKS_CONTEXT
+from app.ai.model_client import generate_json, generate_text
 from app.database import get_db
 from app.dependencies.org import get_current_org
 from app.models.ai_chat import AiChatMessage, AiChatThread
+from app.services.google_connection import get_docs_service, get_drive_service
 
 router = APIRouter(prefix="/ai-chat", tags=["AI Chat"])
-
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 MAX_MEMORY_MESSAGES = 14
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Request schemas
+# ─────────────────────────────────────────────────────────────────────────────
 class CreateThreadRequest(BaseModel):
     title: str | None = None
     brand_id: str | None = None
@@ -53,6 +60,10 @@ class UpdateThreadRequest(BaseModel):
     tone_id: str | None = None
     status: str | None = None
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Google Docs helpers
+# ─────────────────────────────────────────────────────────────────────────────
 def search_google_docs_for_ai(db: Session, org_id, query: str, limit: int = 5):
     drive = get_drive_service(db=db, org_id=org_id)
 
@@ -218,6 +229,10 @@ def extract_doc_query(text: str) -> str:
 
     return " ".join(cleaned.split()).strip()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Chat helpers
+# ─────────────────────────────────────────────────────────────────────────────
 def serialize_message(msg: AiChatMessage) -> dict:
     return {
         "id": str(msg.id),
@@ -242,27 +257,25 @@ def generate_chat_title(user_text: str) -> str:
         return "New conversation"
 
     try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.25,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Generate a short ChatGPT-style title for this marketing assistant conversation. "
-                        "Maximum 5 words. No quotes. No punctuation at the end. "
-                        "If the message is only a greeting, return: General discussion."
-                    ),
-                },
-                {"role": "user", "content": clean},
-            ],
+        title = generate_text(
+            clean,
+            system=(
+                "Generate a short title for this marketing assistant conversation. "
+                "Maximum 5 words. No quotes. No punctuation at the end. "
+                "If the message is only a greeting, return: General discussion. "
+                "Return only the title."
+            ),
+            fast=True,
+            max_output_tokens=300,
         )
 
-        title = (res.choices[0].message.content or "").strip()
         title = title.replace('"', "").replace("'", "")
+        title = title.splitlines()[0] if title else ""
         return title[:60] or "New conversation"
 
-    except Exception:
+    except Exception as e:
+        print("[AI CHAT] title error:", e)
+
         if clean.lower() in {"hi", "hie", "hello", "hey"}:
             return "General discussion"
 
@@ -373,41 +386,28 @@ def generate_normal_chat_reply(
     recent_context: str,
 ) -> str:
     try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
+        reply = generate_text(
+            user_text,
+            system=build_ai_system_prompt(
+                org_context=org_context,
+                recent_context=recent_context,
+            ),
             temperature=0.7,
-            messages=[
-                {
-                    "role": "system",
-                    "content": build_ai_system_prompt(
-                        org_context=org_context,
-                        recent_context=recent_context,
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": user_text,
-                },
-            ],
+            max_output_tokens=1500,
         )
 
-        return (res.choices[0].message.content or "I understand.").strip()
+        return reply or "I understand."
 
-    except Exception:
+    except Exception as e:
+        print("[AI CHAT] reply error:", e)
         return "I understand. Tell me more and I’ll help you shape it into a clear business action."
 
 
-def detect_chat_intent(user_text: str) -> dict:
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0.2,
-        messages=[
-            {
-                "role": "system",
-                "content": """
+# ─────────────────────────────────────────────────────────────────────────────
+# Intent routing
+# ─────────────────────────────────────────────────────────────────────────────
+INTENT_SYSTEM_PROMPT = """
 You are an intent router for a brand-aware AI marketing chatbot.
-
-Return STRICT JSON only. No markdown. No explanations.
 
 Allowed intents:
 - normal_chat
@@ -433,50 +433,53 @@ JSON shape:
   "visualization_type": "chart_and_table",
   "analysis_focus": "short focus or null"
 }
-""",
-            },
-            {"role": "user", "content": user_text},
-        ],
-    )
+""".strip()
 
-    raw = res.choices[0].message.content or "{}"
+VALID_INTENTS = {
+    "normal_chat",
+    "generate_image",
+    "generate_month_content",
+    "analyze_business",
+}
 
+
+def detect_chat_intent(user_text: str) -> dict:
     try:
-        data = json.loads(raw)
-    except Exception:
-        data = {
-            "intent": "normal_chat",
-            "reply": "I understand. Tell me what you want to create next.",
-            "generation_prompt": None,
-            "needs_visualization": False,
-            "visualization_type": None,
-            "analysis_focus": None,
-        }
+        data = generate_json(
+            user_text,
+            system=INTENT_SYSTEM_PROMPT,
+            fast=True,
+            max_output_tokens=800,
+        )
+    except Exception as e:
+        print("[AI CHAT] intent error:", e)
+        data = {}
 
-    intent = data.get("intent") or "normal_chat"
+    intent = data.get("intent")
 
-    if intent not in [
-        "normal_chat",
-        "generate_image",
-        "generate_month_content",
-        "analyze_business",
-    ]:
+    if intent not in VALID_INTENTS:
         intent = "normal_chat"
 
     return {
         "intent": intent,
-        "reply": data.get("reply") or "I understand.",
+        "reply": data.get("reply") or "I understand. Tell me what you want to create next.",
         "generation_prompt": data.get("generation_prompt"),
         "needs_visualization": bool(data.get("needs_visualization")),
         "visualization_type": data.get("visualization_type"),
         "analysis_focus": data.get("analysis_focus"),
     }
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Business analysis
+# ─────────────────────────────────────────────────────────────────────────────
 def safe_count(db: Session, sql: str, params: dict) -> int:
     try:
         value = db.execute(text(sql), params).scalar()
         return int(value or 0)
     except Exception:
+        # A failed statement aborts the transaction in Postgres; reset it.
+        db.rollback()
         return 0
 
 
@@ -569,15 +572,8 @@ def generate_business_analysis_reply(
     recent_context: str,
     analysis_payload: dict,
 ) -> str:
-    try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.35,
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"""
-You are Relvo's business analysis assistant inside the user's workspace.
+    system_prompt = f"""
+You are NeuroFlow's business analysis assistant inside the user's workspace.
 
 Use the organisation context, recent conversation, and analysis payload.
 Explain the business health clearly.
@@ -587,11 +583,9 @@ Be concise, accurate, and strategic.
 
 APP LINKS:
 {APP_LINKS_CONTEXT}
-""",
-                },
-                {
-                    "role": "user",
-                    "content": f"""
+""".strip()
+
+    user_prompt = f"""
 User request:
 {user_text}
 
@@ -602,16 +596,32 @@ Recent conversation:
 {recent_context}
 
 Analysis payload:
-{json.dumps(analysis_payload, indent=2)}
-""",
-                },
-            ],
+{json.dumps(analysis_payload, indent=2, default=str)}
+""".strip()
+
+    try:
+        reply = generate_text(
+            user_prompt,
+            system=system_prompt,
+            temperature=0.35,
+            max_output_tokens=2000,
         )
 
-        return (res.choices[0].message.content or "").strip() or "Here is the business analysis."
-    except Exception:
-        return "Here is a quick business analysis. I reviewed the profile, reviews, offers, media assets, and connected documents to estimate how ready this business is for better AI-generated campaigns."
+        return reply or "Here is the business analysis."
 
+    except Exception as e:
+        print("[AI CHAT] business analysis error:", e)
+
+        return (
+            "Here is a quick business analysis. I reviewed the profile, reviews, offers, "
+            "media assets, and connected documents to estimate how ready this business is "
+            "for better AI-generated campaigns."
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Routes
+# ─────────────────────────────────────────────────────────────────────────────
 @router.patch("/threads/{thread_id}")
 def update_thread(
     thread_id: UUID,
@@ -949,10 +959,6 @@ Tell the user Google Docs appears connected incorrectly or needs reconnecting.
         meta_json={},
     )
 
-
-    # meta_json
-    # intent
-
     assistant_msg = AiChatMessage(
         thread_id=thread.id,
         org_id=org.id,
@@ -994,4 +1000,3 @@ Tell the user Google Docs appears connected incorrectly or needs reconnecting.
             "google_doc": doc_meta,
         },
     }
-

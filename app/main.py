@@ -33,6 +33,7 @@ from app.routers.template_segments import router as template_segments_router
 from app.routers.ai_chat import router as ai_chat_router
 from app.routers import public_ai_chat
 from app.routers import google_oauth, google_docs
+from app.routers import facebook_oauth
 # Create FastAPI app FIRST
 app = FastAPI(title="AI Marketing System")
 # Enable CORS (required for Next.js frontend)
@@ -86,6 +87,7 @@ app.include_router(ai_chat_router)
 app.include_router(public_ai_chat.router)
 app.include_router(google_oauth.router)
 app.include_router(google_docs.router)
+app.include_router(facebook_oauth.router)   
 # Health check
 @app.get("/")
 def health_check():

@@ -12,24 +12,21 @@ New logic:
 """
 from __future__ import annotations
 
-import json
-import os
 import re
 import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from openai import OpenAI
 from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app.ai.model_client import generate_json
 from app.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.tone import Tone
 
 router = APIRouter(prefix="/tones", tags=["tones"])
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 DEFAULT_SEGMENTS = ["background", "hero-image", "hero-text", "cta", "footer"]
 EXTRA_SEGMENTS = ["features", "offer", "sponsors", "contact", "social", "reviews", "scene", "header"]
@@ -58,6 +55,9 @@ class ToneGenerateRequest(BaseModel):
     idea: str
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 def _slugify_tone_name(value: str) -> str:
     value = (value or "").strip().lower()
     value = re.sub(r"[^a-z0-9]+", "_", value)
@@ -135,24 +135,6 @@ def _tone_to_dict(db: Session, tone: Tone) -> dict:
     return data
 
 
-def _safe_ai_json(raw: str) -> dict:
-    raw = (raw or "").strip()
-    try:
-        return json.loads(raw)
-    except Exception:
-        pass
-
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            return json.loads(raw[start : end + 1])
-        except Exception:
-            pass
-
-    return {}
-
-
 def _fallback_generated_tone(idea: str) -> dict:
     words = [w for w in re.sub(r"[^a-zA-Z0-9 ]+", " ", idea).split() if len(w) > 2]
     label = " ".join(words[:3]).strip().title() or "Custom Tone"
@@ -161,36 +143,13 @@ def _fallback_generated_tone(idea: str) -> dict:
         "label": label,
         "description": "Use a clear, practical, business-focused tone. Keep the message human, confident, concise, and action-oriented.",
         "emoji": "✨",
-        "suggested_segments": ["features", "cta"] if "cta" in EXTRA_SEGMENTS else ["features"],
+        "suggested_segments": ["features"],
     }
 
 
-@router.get("")
-def list_tones(active_only: bool = True, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    q = select(Tone).order_by(Tone.sort_order.asc(), Tone.name.asc())
-    if active_only:
-        q = q.where(Tone.is_active == True)  # noqa: E712
-    rows = db.execute(q).scalars().all()
-    return [_tone_to_dict(db, row) for row in rows]
-
-
-@router.post("/generate")
-def generate_tone(payload: ToneGenerateRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    idea = (payload.idea or "").strip()
-    if not idea:
-        raise HTTPException(status_code=400, detail="Tone idea is required")
-
-    try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.55,
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"""
+def _tone_generation_system_prompt() -> str:
+    return f"""
 You generate tone presets for an AI marketing/design system.
-
-Return STRICT JSON only. No markdown. No explanations.
 
 Available extra segments:
 {', '.join(EXTRA_SEGMENTS)}
@@ -212,18 +171,47 @@ Rules:
 - suggested_segments must only contain items from available extra segments.
 - Choose segments that support the tone. Do not select everything.
 - If unsure, suggest ["features"].
-""",
-                },
-                {"role": "user", "content": idea},
-            ],
+""".strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Routes
+# ─────────────────────────────────────────────────────────────────────────────
+@router.get("")
+def list_tones(active_only: bool = True, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    q = select(Tone).order_by(Tone.sort_order.asc(), Tone.name.asc())
+    if active_only:
+        q = q.where(Tone.is_active == True)  # noqa: E712
+    rows = db.execute(q).scalars().all()
+    return [_tone_to_dict(db, row) for row in rows]
+
+
+@router.post("/generate")
+def generate_tone(payload: ToneGenerateRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    idea = (payload.idea or "").strip()
+    if not idea:
+        raise HTTPException(status_code=400, detail="Tone idea is required")
+
+    try:
+        data = generate_json(
+            idea,
+            system=_tone_generation_system_prompt(),
+            fast=True,
+            temperature=0.55,
+            max_output_tokens=1500,
         )
-        data = _safe_ai_json(res.choices[0].message.content or "") or _fallback_generated_tone(idea)
-    except Exception:
+    except Exception as e:
+        print("[TONES] generation error:", e)
+        data = {}
+
+    if not data:
         data = _fallback_generated_tone(idea)
+
+    fallback = _fallback_generated_tone(idea)
 
     name = _slugify_tone_name(str(data.get("name") or data.get("label") or idea))
     label = str(data.get("label") or name.replace("_", " ").title()).strip()
-    description = str(data.get("description") or _fallback_generated_tone(idea)["description"]).strip()
+    description = str(data.get("description") or fallback["description"]).strip()
     emoji = str(data.get("emoji") or "✨").strip()[:10]
     suggested_segments = _clean_segment_types(data.get("suggested_segments") or []) or ["features"]
 
