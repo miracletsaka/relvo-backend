@@ -34,7 +34,7 @@ from app.routers.ai_chat import router as ai_chat_router
 from app.routers import public_ai_chat
 from app.routers import google_oauth, google_docs
 from app.routers import facebook_oauth
-from backend.app.routers import social
+from app.routers import social
 # Create FastAPI app FIRST
 app = FastAPI(title="AI Marketing System")
 # Enable CORS (required for Next.js frontend)
