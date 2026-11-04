@@ -1,5 +1,5 @@
-
 import hashlib
+import os
 import secrets
 
 from fastapi import Response
@@ -8,10 +8,12 @@ COOKIE_NAME = "nf_session"
 ORG_COOKIE_NAME = "nf_org"
 ONBOARDING_COOKIE_NAME = "nf_onboarding"
 
-# Production runs on Render over HTTPS.
-# Cross-site requests between Vercel and Render require SameSite=None.
-COOKIE_SECURE = True
-COOKIE_SAMESITE = "none"
+# The browser talks to the Vercel domain only (Next.js rewrites /backend/* to Render),
+# so these are first-party cookies: SameSite=Lax is correct and works in every browser.
+# Secure is required on HTTPS (production) and must be off on plain http://localhost.
+IS_PROD = os.getenv("ENV", "").strip().lower() in ("production", "prod")
+COOKIE_SECURE = IS_PROD
+COOKIE_SAMESITE = "lax"
 
 
 def new_session_token() -> str:
