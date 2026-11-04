@@ -365,7 +365,7 @@ RECENT CONVERSATION MEMORY:
 {recent_context or "No recent conversation yet."}
 
 - When mentioning an app feature, always include the markdown link from APP LINKS.
-- Use markdown links exactly like: [Google Docs integration](/dashboard/integrations/google)
+- Use markdown links exactly like: [Google Docs integration](/dashboard/integrations)
 - Do not say "go to integrations" without providing the clickable app link.
 
 Rules:

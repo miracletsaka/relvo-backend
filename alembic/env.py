@@ -1,56 +1,68 @@
+
 import os
 from logging.config import fileConfig
 
+from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, pool
-from alembic import context
 
-# ✅ Loads backend/.env (make sure you run alembic from backend folder)
+# Load environment variables from backend/.env
 load_dotenv()
 
-# this is the Alembic Config object, which provides access to the values within the .ini file
 config = context.config
 
-# ✅ ALWAYS override alembic.ini with DATABASE_URL from .env (works for offline + online)
+# Use DATABASE_URL from the backend environment
 database_url = os.getenv("DATABASE_URL")
+
 if not database_url:
-    raise RuntimeError("DATABASE_URL is not set. Check backend/.env")
+    raise RuntimeError(
+        "DATABASE_URL is not set. Check your backend/.env file."
+    )
 
-config.set_main_option("sqlalchemy.url", database_url)
+config.set_main_option(
+    "sqlalchemy.url",
+    database_url.replace("%", "%%")
+)
 
-# Interpret the config file for Python logging.
+# Configure logging
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# ---- MODELS / METADATA ----
+# Import the shared SQLAlchemy Base
 from app.database import Base
-from app.models import *  # noqa: F401,F403
 
-# If you explicitly import models to ensure Alembic sees them, keep these:
-from app.models.topic import Topic  # noqa: F401
-from app.models.content_item import ContentItem  # noqa: F401
-from app.models.approval import Approval  # noqa: F401
-from app.models.job import Job  # noqa: F401
-from app.models.topic_chat import TopicChat  # noqa: F401
-from app.models.content_draft import ContentDraft  # noqa: F401
-from app.models.content_item import ContentItem  # noqa: F401
+# Import all models to register their tables in Base.metadata
+from app.models.topic import Topic
+from app.models.content_item import ContentItem
+from app.models.approval import Approval
+from app.models.job import Job
+from app.models.topic_chat import TopicChat
+from app.models.content_draft import ContentDraft
 from app.models.template import Template
-# alembic/env.py
-from app.models.media_asset import MediaAsset  # ← add this
-from app.database import Base
-target_metadata = Base.metadata
+from app.models.media_asset import MediaAsset
+from app.models.organisation import Organisation
+from app.models.brand import Brand
+from app.models.tone import Tone
+from app.models.org_profile import OrgBusinessInfo
+from app.models.template_segment import TemplateSegment
+
+# Add all other current models here, including Organisation and Brand.
+# Example:
+# from app.models.organisation import Organisation
+# from app.models.brand import Brand
 
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode."""
-    url = config.get_main_option("sqlalchemy.url")  # ✅ now comes from .env
+    url = config.get_main_option("sqlalchemy.url")
+
     context.configure(
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        compare_type=True,
     )
 
     with context.begin_transaction():
@@ -58,17 +70,23 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode."""
     connectable = create_engine(
-        config.get_main_option("sqlalchemy.url"),  # ✅ now comes from .env
+        config.get_main_option("sqlalchemy.url"),
         poolclass=pool.NullPool,
     )
 
-    with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+    try:
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                compare_type=True,
+            )
 
-        with context.begin_transaction():
-            context.run_migrations()
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        connectable.dispose()
 
 
 if context.is_offline_mode():
