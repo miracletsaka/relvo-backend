@@ -37,7 +37,7 @@ from app.routers import facebook_oauth
 from app.routers import social
 from app.routers import outbound_settings
 from app.routers import outbound_settings, outbound
-
+from app.routers import ai_asr
 # Create FastAPI app FIRST
 app = FastAPI(title="AI Marketing System")
 # Enable CORS (required for Next.js frontend)
@@ -96,6 +96,7 @@ app.include_router(social.router)
 app.include_router(outbound_settings.router)
 app.include_router(outbound_settings.router)
 app.include_router(outbound.router)
+app.include_router(ai_asr.router)
 # Health check
 @app.get("/")
 def health_check():
